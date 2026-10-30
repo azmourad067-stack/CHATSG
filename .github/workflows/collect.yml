@@ -1,0 +1,48 @@
+# Collecte intrajournalière légère + prédictions figées avant départ.
+# Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
+# Coût : ~1 min par exécution, 24 exécutions/jour ≈ 720 min/mois (gratuit en dépôt public ;
+# quota de 2 000 min/mois en dépôt privé).
+name: collect
+
+on:
+  schedule:
+    - cron: "7,37 10-21 * * *"   # toutes les 30 min, 10 h-22 h UTC (courses françaises)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-writes
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+    steps:
+      - name: Vérifier la configuration
+        id: cfg
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Secret DATABASE_URL absent : collecte ignorée."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.cfg.outputs.skip != 'true'
+        run: pip install -r requirements.txt "psycopg[binary]>=3.2"
+      - name: Cotes avant départ et résultats récents
+        if: steps.cfg.outputs.skip != 'true'
+        run: python scripts/refresh_data.py --countries FRA --window-minutes 75
+      - name: Prédictions figées avant départ
+        if: steps.cfg.outputs.skip != 'true'
+        run: python scripts/predict_upcoming.py --window-minutes 75

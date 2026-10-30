@@ -1,0 +1,4 @@
+# Dépendances d'entraînement (hors Streamlit Cloud).
+-r requirements.txt
+scipy==1.18.1
+scikit-learn==1.9.1
