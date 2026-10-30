@@ -15,7 +15,8 @@ from horse_intelligence.services.context import build_context
 from horse_intelligence.services.ingestion import ingest_day
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ["dashboard", "races", "horse_profile", "settings", "race_analysis", "backtesting"]
+PAGES = ["dashboard", "races", "horse_profile", "settings", "race_analysis", "backtesting",
+         "ai_laboratory"]
 
 
 def _page_script(module: str) -> None:
@@ -80,12 +81,3 @@ def test_race_detail_and_horse_search(isolated_env) -> None:  # type: ignore[no-
     assert at.dataframe  # historique affiché
 
 
-def test_unavailable_pages_show_no_numbers(isolated_env) -> None:  # type: ignore[no-untyped-def]
-    def script() -> None:
-        from horse_intelligence.frontend.unavailable import make
-
-        make("Laboratoire IA")()
-
-    at = AppTest.from_function(script)
-    at.run()
-    assert not at.exception and not at.dataframe and not at.metric

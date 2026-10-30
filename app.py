@@ -12,6 +12,7 @@ if str(SRC) not in sys.path:
 import streamlit as st  # noqa: E402
 
 from horse_intelligence.frontend import (  # noqa: E402
+    ai_laboratory,
     backtesting,
     dashboard,
     horse_profile,
@@ -20,7 +21,6 @@ from horse_intelligence.frontend import (  # noqa: E402
     settings,
 )
 from horse_intelligence.frontend.components.cards import inject_style  # noqa: E402
-from horse_intelligence.frontend.unavailable import make  # noqa: E402
 from horse_intelligence.monitoring.logging_config import configure_logging  # noqa: E402
 
 st.set_page_config(page_title="Horse Intelligence", page_icon="🐎", layout="wide")
@@ -35,7 +35,7 @@ pages = {
     ],
     "Intelligence": [
         st.Page(race_analysis.render, title="Analyse approfondie", url_path="analyse"),
-        st.Page(make("Laboratoire IA"), title="Laboratoire IA", url_path="laboratoire"),
+        st.Page(ai_laboratory.render, title="Laboratoire IA", url_path="laboratoire"),
         st.Page(backtesting.render, title="Backtesting", url_path="backtesting"),
     ],
     "Système": [

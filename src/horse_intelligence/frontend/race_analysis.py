@@ -42,7 +42,12 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
     else:
         st.warning(pred.message)
 
-    c1, c2, c3 = st.columns(3)
+    unc_text = {"exploitable": "exploitable", "incertaine": "incertaine",
+                "hors distribution": "hors distribution", "non évaluée": "non évaluée"}
+    if pred.uncertainty in ("incertaine", "hors distribution"):
+        st.warning(f"Course {unc_text[pred.uncertainty]} : " + " ; ".join(
+            pred.uncertainty_reasons) + ". Aucun signal exploitable n'est produit.")
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         metric_card("Modèle principal", MODEL_LABELS.get(pred.primary or "", "?"),
                     f"version {meta['version']} · {meta['status']}")
@@ -52,12 +57,18 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
     with c3:
         metric_card("Cotes de référence", "disponibles" if pred.has_market else "absentes",
                     "marché utilisé comme référence")
+    with c4:
+        metric_card("Incertitude", unc_text.get(pred.uncertainty, pred.uncertainty),
+                    "ensemble bootstrap et profil de course")
 
     t = pred.table.copy()
     t["cheval"] = t["horse_id"].map(horses)
     view = pd.DataFrame({
         "Rang": t["rank"].astype(int), "N°": t["num_pmu"], "Cheval": t["cheval"],
-        "P(victoire)": t["p_win"].map(_pct), "P(place)": t["p_place"].map(_pct),
+        "P(victoire)": t["p_win"].map(_pct),
+        "Intervalle": [f"{_pct(a)} – {_pct(b)}" for a, b in
+                       zip(t["p_low"], t["p_high"], strict=True)],
+        "P(place)": t["p_place"].map(_pct),
         "P(marché)": t["mkt_prob"].map(_pct),
         "Cote réf.": t["mkt_odds"].map(lambda x: "—" if pd.isna(x) else f"{x:.1f}"),
         "Désaccord": t["disagreement"].map(_pct),
@@ -65,7 +76,20 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
     })
     st.dataframe(view, hide_index=True, width="stretch")
     st.caption("Probabilités arrondies au point : la précision réelle est bien moindre. "
-               "« Désaccord » = écart maximal entre les estimations des modèles et du marché.")
+               "Intervalle = 10e-90e centiles d'un ensemble de modèles appris sur des "
+               "rééchantillonnages de courses (incertitude d'estimation). « Désaccord » = écart "
+               "maximal entre les estimations des modèles et du marché.")
+
+    st.subheader("Forces, faiblesses et signaux faibles")
+    for r in t.to_dict("records"):
+        with st.expander(f"N° {r['num_pmu']} — {r['cheval'] or '?'} · {_pct(r['p_win'])}"):
+            st.markdown(f"**Forces** : {r['strengths'] or '—'}")
+            st.markdown(f"**Faiblesses** : {r['weaknesses'] or '—'}")
+            st.markdown(f"**Signaux faibles validés** : {r['weak_signals'] or 'aucun'}")
+    st.caption("Forces et faiblesses : variables qui font monter ou baisser l'estimation par "
+               "rapport aux autres partants (contributions SHAP du modèle) ; elles décrivent le "
+               "modèle, pas une cause. Signaux faibles : uniquement les patterns validés hors "
+               "échantillon par le Laboratoire IA.")
 
     fig = go.Figure()
     fig.add_bar(name="Modèle", x=t["num_pmu"].astype(str), y=t["p_win"], marker_color=EMERALD)

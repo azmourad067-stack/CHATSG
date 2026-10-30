@@ -28,6 +28,13 @@ from horse_intelligence.intelligence.feature_engineering import (
     load_raw,
 )
 from horse_intelligence.intelligence.leakage_audit import audit_source_aggregates
+from horse_intelligence.intelligence.uncertainty import (
+    N_MEMBERS,
+    OodScorer,
+    fit_members,
+    learn_thresholds,
+    member_intervals,
+)
 from horse_intelligence.models.baseline import (
     CalibratedMarket,
     FormLogit,
@@ -106,13 +113,34 @@ def model_runners() -> dict[str, ModelRunner]:
     }
 
 
+def _final_with_uncertainty(base: pd.DataFrame, cal: pd.DataFrame, with_market: bool,
+                            n_members: int) -> dict[str, Any]:
+    """Modèle final + ensemble bootstrap + score hors distribution + seuils de statut.
+
+    Les seuils sont des quantiles mesurés sur la période de calibration (sur laquelle le
+    calibrateur a été appris) : ils décrivent la dispersion habituelle, ce ne sont pas
+    des mesures de performance.
+    """
+    cal_fit = _with_market(cal) if with_market else cal
+    model = LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=with_market)
+    model.fit(base, cal_fit)
+    members = fit_members(base, cal_fit, LGBM_FEATURES, CATEGORICAL, with_market, n_members)
+    ood = OodScorer(NUMERIC_FEATURES).fit(base)
+    ref = _with_market(cal)
+    p = model.predict(ref)
+    lo, hi = member_intervals(members, ref)
+    thresholds = learn_thresholds(ref, p, lo, hi, ood.runner_scores(ref))
+    return {**model.to_dict(), "members": [m.to_dict() for m in members],
+            "ood": ood.to_dict(), "thresholds": thresholds.to_dict()}
+
+
 def _version() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
 def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
                        min_train_days: int = 21, test_days: int = 7, calib_days: int = 7,
-                       register: bool = True) -> TrainingReport:
+                       register: bool = True, n_members: int = N_MEMBERS) -> TrainingReport:
     raw = load_raw(engine)
     ds = build_dataset(raw)
     audit = audit_source_aggregates(ds.frame)
@@ -148,12 +176,11 @@ def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
     base = frame[~frame["race_date"].isin(calib_dates)]
     cal = frame[frame["race_date"].isin(calib_dates)]
     finals: dict[str, dict[str, Any]] = {
-        "lgbm_form": LgbmRaceModel(LGBM_FEATURES, CATEGORICAL).fit(base, cal).to_dict(),
-        "lgbm_market": LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=True)
-        .fit(base, _with_market(cal)).to_dict(),
-        REFERENCE_MODEL: {"calibrator": CalibratedMarket().fit(_with_market(frame))
-                          .model.to_dict()},
+        family: _final_with_uncertainty(base, cal, with_market, n_members)
+        for family, with_market in (("lgbm_form", False), ("lgbm_market", True))
     }
+    finals[REFERENCE_MODEL] = {"calibrator": CalibratedMarket().fit(_with_market(frame))
+                               .model.to_dict()}
     importance = LgbmRaceModel.from_dict(finals["lgbm_form"]).feature_importance()
 
     n_market_races = int(mkt["race_id"].nunique())

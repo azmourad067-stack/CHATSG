@@ -16,10 +16,17 @@ from sqlalchemy import Engine, select
 
 from horse_intelligence.data.processors.validation import DataStatus
 from horse_intelligence.data.storage import database as db
+from horse_intelligence.intelligence.explainability import (
+    relative_contributions,
+    strengths_weaknesses,
+)
 from horse_intelligence.intelligence.feature_engineering import build_dataset, load_raw
+from horse_intelligence.intelligence.pattern_discovery import condition_frame
+from horse_intelligence.intelligence.uncertainty import OodScorer, member_intervals, race_status
 from horse_intelligence.models.lightgbm_model import LgbmRaceModel
 from horse_intelligence.models.ranking import ConditionalLogit, paid_places, place_probabilities
 from horse_intelligence.models.registry import latest_model, load_artifact
+from horse_intelligence.services.discovery import validated_patterns
 
 PRIMARY_ORDER = ("lgbm_market", "lgbm_form")
 MIN_EDGE_UNCERTAINTY = 0.02
@@ -36,6 +43,8 @@ class RacePrediction:
     n_places: int = 0
     has_market: bool = False
     in_sample: bool = False           # course incluse dans l'apprentissage du modèle
+    uncertainty: str = "non évaluée"  # exploitable | incertaine | hors distribution
+    uncertainty_reasons: list[str] = field(default_factory=list)
 
 
 def _quality_status(engine: Engine, race_id: int) -> tuple[str, list[dict[str, Any]]]:
@@ -65,6 +74,20 @@ def _load_models(engine: Engine) -> dict[str, tuple[dict[str, Any], dict[str, An
     return out
 
 
+def matched_patterns(race: pd.DataFrame, validated: list[dict[str, Any]]) -> list[str]:
+    """Libellés des patterns VALIDÉS hors échantillon qui s'appliquent à chaque partant."""
+    if not validated:
+        return [""] * len(race)
+    cond = condition_frame(race)
+    out = []
+    for i in range(len(race)):
+        hits = [f"{p['definition_json']['label']} (A/E {p['effect_size']:.2f})"
+                for p in validated
+                if all(cond.iloc[i][c] == v for c, v in p["definition_json"]["group"])]
+        out.append(" ; ".join(hits))
+    return out
+
+
 def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     status, _checks = _quality_status(engine, race_id)
     if status in (DataStatus.INSUFFICIENT.value, DataStatus.UNAVAILABLE.value):
@@ -81,6 +104,7 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
         return RacePrediction(race_id, DataStatus.UNAVAILABLE.value,
                               "Aucun modèle entraîné : lancez scripts/train_models.py.")
 
+    validated = validated_patterns(engine)
     use_agg = all(bool(p.get("use_source_aggregates", True)) for _, p in models.values())
     frame = build_dataset(load_raw(engine, until=race_date), use_source_aggregates=use_agg).frame
     race = frame[frame["race_id"] == race_id].copy()
@@ -90,6 +114,7 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     has_market = bool(race["mkt_prob"].notna().all())
 
     probs: dict[str, np.ndarray] = {}
+    lgbm: dict[str, LgbmRaceModel] = {}
     meta_out: dict[str, dict[str, Any]] = {}
     for family, (meta, payload) in models.items():
         meta_out[family] = {"version": meta["version"], "status": meta["status"],
@@ -102,6 +127,7 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
         m = LgbmRaceModel.from_dict(payload)
         if m.with_market and not has_market:
             continue
+        lgbm[family] = m
         probs[family] = m.predict(race)
     primary = next((f for f in PRIMARY_ORDER if f in probs), None)
     if primary is None:
@@ -122,13 +148,38 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     stack = np.vstack(list(probs.values()) + ([race["mkt_prob"].to_numpy()] if has_market
                                                else []))
     table["disagreement"] = stack.max(axis=0) - stack.min(axis=0)
+    # --- incertitude : ensemble bootstrap, hors distribution, statut de course
+    payload = models[primary][1]
+    members = [LgbmRaceModel.from_dict(d) for d in payload.get("members", [])]
+    if members:
+        lo, hi = member_intervals(members, race)
+    else:
+        lo = hi = np.full(len(race), np.nan)
+    table["p_low"], table["p_high"] = lo, hi
+    unc: str = "non évaluée"
+    reasons: list[str] = []
+    if members and "ood" in payload and "thresholds" in payload:
+        ood = OodScorer.from_dict(payload["ood"]).runner_scores(race)
+        unc, reasons = race_status(p, lo, hi, ood,
+                                   race["mkt_prob"].to_numpy() if has_market else None,
+                                   payload["thresholds"])
+
+    # --- explications (relatives au lot) et signaux faibles validés
+    contrib = relative_contributions(lgbm[primary], race)
+    sw = [strengths_weaknesses(contrib.loc[i]) for i in race.index]
+    table["strengths"] = [", ".join(s) for s, _ in sw]
+    table["weaknesses"] = [", ".join(w) for _, w in sw]
+    table["weak_signals"] = matched_patterns(race, validated)
+
     if has_market:
         table["edge"] = table["p_win"] - table["mkt_prob"]
         # espérance théorique pour 1 € sur la cote de référence ; le rapport final du
         # pari mutuel sera différent : ce n'est PAS un gain attendu garanti
         table["ev_theoretical"] = table["p_win"] * table["mkt_odds"] - 1.0
-        table["value_signal"] = (table["edge"] > np.maximum(table["disagreement"] / 2,
-                                                           MIN_EDGE_UNCERTAINTY))
+        # signal seulement si la borne basse dépasse le marché et la course est exploitable
+        table["value_signal"] = ((table["edge"] > MIN_EDGE_UNCERTAINTY)
+                                 & (table["p_low"] > table["mkt_prob"])
+                                 & (unc == "exploitable"))
     msg = ("Modèle validé." if meta_out[primary]["status"] == "active" else
            "Modèle CANDIDAT non validé : il n'a pas démontré d'amélioration significative "
            "par rapport au marché. Estimations à titre expérimental.")
@@ -138,4 +189,4 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
         msg += (" Cette course fait partie de la période d'apprentissage : l'estimation "
                 "n'est pas indépendante de son résultat.")
     return RacePrediction(race_id, status, msg, table.sort_values("rank").reset_index(drop=True),
-                          meta_out, primary, n_places, has_market, in_sample)
+                          meta_out, primary, n_places, has_market, in_sample, unc, reasons)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -43,7 +44,7 @@ def test_walk_forward_never_trains_on_test_dates() -> None:
 def trained(repo: Repository, tmp_path) -> tuple[Repository, object]:  # type: ignore[no-untyped-def]
     populate(repo, days=30, with_results_last_day=False)
     rep = train_and_evaluate(repo.engine, tmp_path / "models", tmp_path / "reports",
-                             min_train_days=14, test_days=5, calib_days=4)
+                             min_train_days=14, test_days=5, calib_days=4, n_members=3)
     return repo, rep
 
 
@@ -88,6 +89,20 @@ def test_predict_upcoming_race(trained) -> None:  # type: ignore[no-untyped-def]
     pd.testing.assert_frame_equal(t, again.table)  # reproductible
     assert "non validé" in first.message
     assert not first.in_sample  # dernier jour sans résultat : hors apprentissage
+    assert first.uncertainty in ("exploitable", "incertaine", "hors distribution")
+    assert t["p_low"].notna().all() and (t["p_low"] <= t["p_high"]).all()
+    assert t["strengths"].str.len().sum() > 0  # explications produites
+    assert (t["weak_signals"] == "").all()  # aucun pattern validé en base
+    # contributions relatives : somme nulle dans la course (seules les différences comptent)
+    from horse_intelligence.intelligence.explainability import relative_contributions
+    from horse_intelligence.intelligence.feature_engineering import build_dataset, load_raw
+    from horse_intelligence.models.lightgbm_model import LgbmRaceModel
+    from horse_intelligence.models.registry import latest_model, load_artifact
+    meta = latest_model(repo.engine, "lgbm_market")
+    model = LgbmRaceModel.from_dict(load_artifact(Path(meta["artifact_uri"])))
+    frame = build_dataset(load_raw(repo.engine)).frame
+    race = frame[frame["race_id"] == race_id]
+    assert np.allclose(relative_contributions(model, race).sum(axis=0), 0.0)
     trained_race = int(repo.races_on(START_DAY + timedelta(days=3))["race_id"].iloc[0])
     assert predict_race(repo.engine, trained_race).in_sample
 
@@ -103,3 +118,14 @@ def test_training_requires_history(repo: Repository, tmp_path) -> None:  # type:
     populate(repo, days=5)
     with pytest.raises(ValueError, match="insuffisant"):
         train_and_evaluate(repo.engine, tmp_path / "m", tmp_path / "r", min_train_days=21)
+
+
+def test_lab_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from horse_intelligence.services.discovery import latest_lab_report, run_lab
+
+    repo, _ = trained
+    rep = run_lab(repo.engine, tmp_path / "lab")
+    assert rep.n_tests > 0
+    assert {"jockeys", "trainers"} <= set(rep.actors)
+    assert rep.anomalies["examples"] and rep.drift["psi"]
+    assert latest_lab_report(tmp_path / "lab")["n_tests"] == rep.n_tests

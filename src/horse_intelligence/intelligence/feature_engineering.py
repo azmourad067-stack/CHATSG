@@ -25,7 +25,7 @@ from sqlalchemy import Engine, text
 from horse_intelligence.intelligence.musique import musique_features
 
 DECISION_OFFSET = timedelta(minutes=10)
-FEATURE_SET_VERSION = "fs-2026.10.1"
+FEATURE_SET_VERSION = "fs-2026.10.2"
 
 # Lissage bayésien empirique des taux de réussite (pseudo-observations)
 SHRINK_RUNS = 20.0
@@ -41,7 +41,7 @@ FORM_FEATURES = [
     "career_starts", "career_win_rate", "career_place_rate", "log_earnings_per_start",
     "horse_db_runs", "horse_days_since_db", "horse_db_mean_pct",
     "jockey_win_rate", "jockey_db_runs", "trainer_win_rate", "trainer_db_runs",
-    "pair_db_runs",
+    "pair_db_runs", "rider_change",
 ]
 # Variables ramenées à la course (centrées dans la course) : utiles au logit conditionnel
 RELATIVE_SOURCES = ["mus_mean_pos_6", "career_win_rate", "jockey_win_rate",
@@ -185,12 +185,14 @@ def _actor_history(hist: pd.DataFrame, key: str, prefix: str) -> pd.DataFrame:
 
 def _horse_history(hist: pd.DataFrame) -> pd.DataFrame:
     d = hist.groupby(["horse_id", "race_date"]).agg(
-        runs=("won", "size"), pct=("finish_pct", "mean")).reset_index()
+        runs=("won", "size"), pct=("finish_pct", "mean"),
+        horse_last_jockey=("jockey_id", "last")).reset_index()
     d = d.sort_values(["horse_id", "race_date"])
     g = d.groupby("horse_id")
     d["horse_db_runs"] = g["runs"].cumsum()
     d["horse_db_mean_pct"] = g["pct"].transform(lambda s: s.rolling(3, min_periods=1).mean())
-    return d[["horse_id", "race_date", "horse_db_runs", "horse_db_mean_pct"]]
+    return d[["horse_id", "race_date", "horse_db_runs", "horse_db_mean_pct",
+              "horse_last_jockey"]]
 
 
 def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True) -> Dataset:
@@ -247,6 +249,10 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
     df = _asof_before(df, _horse_history(hist), ["horse_id"])
     df["horse_days_since_db"] = (pd.to_datetime(df["race_date"]) - df.pop("_hist_date")).dt.days
     df["horse_db_runs"] = df["horse_db_runs"].fillna(0.0)
+    # changement de jockey/driver depuis la dernière course connue (NaN sans historique)
+    last = df.pop("horse_last_jockey")
+    df["rider_change"] = np.where(last.isna(), np.nan,
+                                  (df["jockey_id"].astype("float64") != last).astype(float))
     pair = hist.groupby(["horse_id", "jockey_id", "race_date"]).size().rename("r").reset_index()
     pair = pair.sort_values("race_date")
     pair["pair_db_runs"] = pair.groupby(["horse_id", "jockey_id"])["r"].cumsum()
