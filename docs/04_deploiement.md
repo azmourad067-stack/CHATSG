@@ -28,23 +28,24 @@ identifiant `yblpqtcahraievhblsxw`) est créé. Le schéma et la sécurité y so
 - un rôle `hi_app` en lecture seule, dont la connexion n'est pas encore activée ;
 - aucun avis de sécurité Supabase.
 
-Il reste deux actions à faire dans le tableau de bord Supabase (aucun mot de passe n'a
-été généré ni transmis en dehors de votre compte) :
+Deux identifiants dédiés existent, et aucun n'est le compte administrateur `postgres` :
 
-1. *Project Settings → Database → Reset database password* : choisissez le mot de passe
-   de l'utilisateur `postgres` (écriture, réservé à GitHub Actions).
-2. *SQL Editor* : activez la connexion du rôle de l'application avec un autre mot de passe :
-   ```sql
-   alter role hi_app with login password 'un-autre-mot-de-passe-long';
-   ```
-3. *Connect → Session pooler* : copiez l'hôte (`aws-0-eu-west-3.pooler.supabase.com`).
-   Les deux chaînes de connexion sont alors :
-   ```
-   écriture (secret GitHub)    : postgresql+psycopg://postgres.yblpqtcahraievhblsxw:<mdp postgres>@<hôte>:5432/postgres?sslmode=require
-   lecture (secret Streamlit)  : postgresql+psycopg://hi_app.yblpqtcahraievhblsxw:<mdp hi_app>@<hôte>:5432/postgres?sslmode=require
-   ```
+| Rôle | Usage | Droits |
+|---|---|---|
+| `hi_writer` | Secret GitHub `DATABASE_URL` (tâches planifiées) | lecture et écriture sur les tables du projet |
+| `hi_app` | Secret Streamlit `DATABASE_URL` (application) | lecture seule |
 
-Passez ensuite directement à l'étape 2 (GitHub).
+Leurs mots de passe ont été générés aléatoirement et remis au propriétaire du projet
+hors du dépôt. Pour les changer : *SQL Editor* →
+`alter role hi_writer with password '…';` (idem pour `hi_app`), puis mettre à jour les
+secrets. Chaînes de connexion (hôte à confirmer dans *Connect → Session pooler*) :
+
+```
+GitHub    : postgresql+psycopg://hi_writer.yblpqtcahraievhblsxw:<mdp>@aws-0-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
+Streamlit : postgresql+psycopg://hi_app.yblpqtcahraievhblsxw:<mdp>@aws-0-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
+```
+
+La branche de travail est fusionnée dans `main`. Passez directement à l'étape 2 (GitHub).
 
 ## 1. Créer la base PostgreSQL (si vous repartez de zéro)
 
