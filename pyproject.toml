@@ -18,10 +18,13 @@ dependencies = [
     "pyyaml>=6.0",
     "plotly>=5.20",
     "pyarrow>=15",
+    "lightgbm>=4.3",
 ]
 
 [project.optional-dependencies]
+train = ["scipy>=1.12"]
 dev = [
+    "scipy>=1.12",
     "pytest>=8",
     "responses>=0.25",
     "ruff>=0.5",
@@ -41,6 +44,10 @@ markers = [
     "network: test de contrat qui interroge une vraie API (désactivé par défaut)",
 ]
 addopts = "-m 'not network'"
+filterwarnings = [
+    # adaptateur de dates sqlite3 (Python 3.12) utilisé par SQLAlchemy : sans effet ici
+    "ignore:The default date adapter is deprecated:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 100

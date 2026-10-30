@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -33,9 +34,12 @@ class DayReport:
 
 
 def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
-               fetch_payouts: bool = True) -> DayReport:
+               fetch_payouts: bool = True,
+               countries: Collection[str] | None = None,
+               pools: Collection[str] | None = None) -> DayReport:
     """Collecte une journée. N'interrompt pas la journée sur l'échec d'une course isolée."""
     report = DayReport(day)
+    active_pools = [p for p in pmu.pools if pools is None or p in pools]
     run_id = repo.start_run(day)
     try:
         raw_prog = pmu.fetch_programme_raw(day)
@@ -53,6 +57,8 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
         raise
 
     for _reunion, race in races_from_programme(day, programme):
+        if countries is not None and race.country not in countries:
+            continue
         report.races_seen += 1
         race_id = repo.upsert_race(race, raw_prog.fetched_at, pmu.key, prog_payload)
         # Partants : une réponse par masse de paris. La première réponse obtenue fournit
@@ -60,7 +66,7 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
         snap: RaceSnapshot | None = None
         main_payload: int | None = None
         failures: list[str] = []
-        for pool in pmu.pools:
+        for pool in active_pools:
             try:
                 raw_part = pmu.fetch_participants_raw(day, race.reunion_num, race.course_num,
                                                       pool)
@@ -91,7 +97,7 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
             continue
 
         if fetch_payouts and race.result_final and snap.observed_after_start:
-            for pool in pmu.pools:
+            for pool in active_pools:
                 try:
                     raw_rap = pmu.fetch_rapports_raw(day, race.reunion_num, race.course_num,
                                                      pool)

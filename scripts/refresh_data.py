@@ -28,6 +28,8 @@ def main() -> int:
     parser.add_argument("--date", type=date.fromisoformat, default=date.today())
     parser.add_argument("--check-sources", action="store_true")
     parser.add_argument("--no-payouts", action="store_true")
+    parser.add_argument("--countries", nargs="+", metavar="PAYS",
+                        help="codes pays à collecter (ex. FRA) ; par défaut tous")
     args = parser.parse_args()
     configure_logging()
     ctx = build_context()
@@ -42,7 +44,8 @@ def main() -> int:
     if not isinstance(pmu, PmuCollector):
         raise SystemExit("Connecteur PMU mal configuré.")
     try:
-        report = ingest_day(args.date, pmu, ctx.repo, fetch_payouts=not args.no_payouts)
+        report = ingest_day(args.date, pmu, ctx.repo, fetch_payouts=not args.no_payouts,
+                            countries=args.countries)
     except CollectorError as exc:
         print(f"Collecte impossible : {exc}", file=sys.stderr)
         return 2

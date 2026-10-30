@@ -15,7 +15,7 @@ from horse_intelligence.services.context import build_context
 from horse_intelligence.services.ingestion import ingest_day
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ["dashboard", "races", "horse_profile", "settings"]
+PAGES = ["dashboard", "races", "horse_profile", "settings", "race_analysis", "backtesting"]
 
 
 def _page_script(module: str) -> None:
@@ -84,7 +84,7 @@ def test_unavailable_pages_show_no_numbers(isolated_env) -> None:  # type: ignor
     def script() -> None:
         from horse_intelligence.frontend.unavailable import make
 
-        make("Analyse approfondie")()
+        make("Laboratoire IA")()
 
     at = AppTest.from_function(script)
     at.run()

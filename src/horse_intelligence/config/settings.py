@@ -61,6 +61,14 @@ class Settings:
         return self.data_dir / "raw"
 
     @property
+    def models_dir(self) -> Path:
+        return self.data_dir / "artifacts" / "models"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.data_dir / "artifacts" / "reports"
+
+    @property
     def using_default_database(self) -> bool:
         return _secret("DATABASE_URL") is None
 

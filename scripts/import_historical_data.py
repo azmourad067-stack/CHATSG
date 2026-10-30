@@ -28,6 +28,12 @@ def main() -> int:
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, default=date.today() - timedelta(1))
     parser.add_argument("--max-consecutive-failures", type=int, default=3)
+    parser.add_argument("--countries", nargs="+", metavar="PAYS",
+                        help="codes pays à collecter (ex. FRA) ; par défaut tous")
+    parser.add_argument("--pools", nargs="+", choices=["OFFLINE", "INTERNET"],
+                        help="masses de paris à collecter ; par défaut toutes")
+    parser.add_argument("--no-payouts", action="store_true",
+                        help="ne pas collecter les rapports (collecte 3 fois plus rapide)")
     args = parser.parse_args()
     if args.end < args.start:
         parser.error("--end doit être postérieure à --start")
@@ -44,7 +50,8 @@ def main() -> int:
             print(f"{day} : déjà collectée, ignorée")
         else:
             try:
-                report = ingest_day(day, pmu, ctx.repo)
+                report = ingest_day(day, pmu, ctx.repo, countries=args.countries,
+                                    pools=args.pools, fetch_payouts=not args.no_payouts)
                 failures = 0
                 print(f"{day} : {report.status} — {report.races_seen} courses")
             except CollectorError as exc:

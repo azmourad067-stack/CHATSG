@@ -1,0 +1,134 @@
+"""Prédiction d'une course : probabilités, places, incertitude simple et comparaison au marché.
+
+Aucune prédiction n'est produite si les données sont insuffisantes (contrôle qualité
+bloquant, partants absents) ou si aucun modèle n'est disponible.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import Engine, select
+
+from horse_intelligence.data.processors.validation import DataStatus
+from horse_intelligence.data.storage import database as db
+from horse_intelligence.intelligence.feature_engineering import build_dataset, load_raw
+from horse_intelligence.models.lightgbm_model import LgbmRaceModel
+from horse_intelligence.models.ranking import ConditionalLogit, paid_places, place_probabilities
+from horse_intelligence.models.registry import latest_model, load_artifact
+
+PRIMARY_ORDER = ("lgbm_market", "lgbm_form")
+MIN_EDGE_UNCERTAINTY = 0.02
+
+
+@dataclass
+class RacePrediction:
+    race_id: int
+    status: str                       # verified | partial | insufficient | unavailable
+    message: str
+    table: pd.DataFrame = field(default_factory=pd.DataFrame)
+    models: dict[str, dict[str, Any]] = field(default_factory=dict)
+    primary: str | None = None
+    n_places: int = 0
+    has_market: bool = False
+
+
+def _quality_status(engine: Engine, race_id: int) -> tuple[str, list[dict[str, Any]]]:
+    r, q = db.races, db.data_quality_reports
+    with engine.connect() as conn:
+        race = conn.execute(select(r.c.race_date, r.c.reunion_num, r.c.course_num)
+                            .where(r.c.race_id == race_id)).first()
+        if race is None:
+            return DataStatus.UNAVAILABLE.value, []
+        key = f"{race.race_date.isoformat()}-R{race.reunion_num}C{race.course_num}"
+        row = conn.execute(select(q.c.status, q.c.checks_json)
+                           .where(q.c.scope == "race", q.c.scope_ref == key)
+                           .order_by(q.c.report_id.desc()).limit(1)).first()
+    if row is None:
+        return DataStatus.UNAVAILABLE.value, []
+    return str(row.status), list(row.checks_json or [])
+
+
+def _load_models(engine: Engine) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    out = {}
+    for family in (*PRIMARY_ORDER, "market_calibrated"):
+        meta = latest_model(engine, family)
+        if meta is None:
+            continue
+        payload = load_artifact(Path(meta["artifact_uri"]), meta["artifact_sha256"])
+        out[family] = (meta, payload)
+    return out
+
+
+def predict_race(engine: Engine, race_id: int) -> RacePrediction:
+    status, _checks = _quality_status(engine, race_id)
+    if status in (DataStatus.INSUFFICIENT.value, DataStatus.UNAVAILABLE.value):
+        return RacePrediction(race_id, status, "Données insuffisantes : aucune prédiction.")
+    with engine.connect() as conn:
+        race_date = conn.execute(select(db.races.c.race_date)
+                                 .where(db.races.c.race_id == race_id)).scalar_one()
+    try:
+        models = _load_models(engine)
+    except (OSError, ValueError) as exc:
+        return RacePrediction(race_id, DataStatus.UNAVAILABLE.value,
+                              f"Échec du chargement des modèles : {exc}")
+    if not any(f in models for f in PRIMARY_ORDER):
+        return RacePrediction(race_id, DataStatus.UNAVAILABLE.value,
+                              "Aucun modèle entraîné : lancez scripts/train_models.py.")
+
+    use_agg = all(bool(p.get("use_source_aggregates", True)) for _, p in models.values())
+    frame = build_dataset(load_raw(engine, until=race_date), use_source_aggregates=use_agg).frame
+    race = frame[frame["race_id"] == race_id].copy()
+    if len(race) < 2:
+        return RacePrediction(race_id, DataStatus.INSUFFICIENT.value,
+                              "Moins de deux partants identifiés : aucune prédiction.")
+    has_market = bool(race["mkt_prob"].notna().all())
+
+    probs: dict[str, np.ndarray] = {}
+    meta_out: dict[str, dict[str, Any]] = {}
+    for family, (meta, payload) in models.items():
+        meta_out[family] = {"version": meta["version"], "status": meta["status"]}
+        if family == "market_calibrated":
+            if has_market:
+                cl = ConditionalLogit.from_dict(payload["calibrator"])
+                probs[family] = cl.predict_proba(race[["mkt_log_prob"]], race["race_id"])
+            continue
+        m = LgbmRaceModel.from_dict(payload)
+        if m.with_market and not has_market:
+            continue
+        probs[family] = m.predict(race)
+    primary = next((f for f in PRIMARY_ORDER if f in probs), None)
+    if primary is None:
+        return RacePrediction(race_id, DataStatus.UNAVAILABLE.value,
+                              "Aucun modèle applicable à cette course.")
+
+    p = probs[primary]
+    declared = race["declared_runners"].iloc[0]
+    n_places = paid_places(int(declared) if pd.notna(declared) else len(race))
+    table = race[["num_pmu", "horse_id", "mkt_odds", "mkt_prob", "mkt_pool",
+                  "form_string", "age", "sex"]].copy()
+    table["p_win"] = p
+    table["rank"] = pd.Series(p, index=race.index).rank(ascending=False, method="min")
+    table["p_place"] = place_probabilities(p, n_places) if n_places else np.nan
+    for family, pr in probs.items():
+        table[f"p_{family}"] = pr
+    # désaccord entre modèles : écart maximal entre estimations disponibles
+    stack = np.vstack(list(probs.values()) + ([race["mkt_prob"].to_numpy()] if has_market
+                                               else []))
+    table["disagreement"] = stack.max(axis=0) - stack.min(axis=0)
+    if has_market:
+        table["edge"] = table["p_win"] - table["mkt_prob"]
+        # espérance théorique pour 1 € sur la cote de référence ; le rapport final du
+        # pari mutuel sera différent : ce n'est PAS un gain attendu garanti
+        table["ev_theoretical"] = table["p_win"] * table["mkt_odds"] - 1.0
+        table["value_signal"] = (table["edge"] > np.maximum(table["disagreement"] / 2,
+                                                           MIN_EDGE_UNCERTAINTY))
+    msg = ("Modèle validé." if meta_out[primary]["status"] == "active" else
+           "Modèle CANDIDAT non validé : il n'a pas démontré d'amélioration significative "
+           "par rapport au marché. Estimations à titre expérimental.")
+    return RacePrediction(race_id, status, msg, table.sort_values("rank").reset_index(drop=True),
+                          meta_out, primary, n_places, has_market)
