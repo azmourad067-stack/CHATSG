@@ -102,3 +102,13 @@ def test_select_then_test_never_tunes_on_test() -> None:
     # le marché est exact et prélève 15 % : aucune règle ne doit être annoncée rentable
     assert out.test is None or out.test["roi"] < 0.15
     assert out.references_test
+
+
+def test_ties_are_broken_deterministically() -> None:
+    pred = _pred()
+    pred["model"] = 1 / 3  # tous à égalité
+    pred["mkt_odds"] = 3.0
+    a = select_bets(pred, Strategy("t", prob_col="model", min_ev=-1))
+    b = select_bets(pred.sample(frac=1, random_state=1), Strategy("t", prob_col="model",
+                                                                  min_ev=-1))
+    assert (a["num_pmu"] == 1).all() and list(a["num_pmu"]) == list(b["num_pmu"])

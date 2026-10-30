@@ -102,3 +102,22 @@ def test_auc_and_bootstrap() -> None:
     assert res["ci_high"] < 0  # les vraies probabilités battent l'uniforme
     m = compute_metrics(df, df["true_p"])
     assert m.n_races == 300 and 0 < m.ece < 0.05
+
+
+@pytest.mark.parametrize(("n", "k", "disc"), [(5, 2, (1.0, 1.0)), (9, 3, (1.0, 0.8, 0.7)),
+                                              (16, 3, (1.0, 1.0, 1.0))])
+def test_vectorized_places_match_enumeration(n: int, k: int, disc: tuple[float, ...]) -> None:
+    from itertools import permutations
+
+    p = np.random.default_rng(n).dirichlet(np.ones(n))
+    strengths = [p ** disc[min(i, len(disc) - 1)] for i in range(k)]
+    ref = np.zeros(n)
+    for order in permutations(range(n), k):
+        prob, used = 1.0, []
+        for j, i in enumerate(order):
+            s = strengths[j]
+            prob *= s[i] / (s.sum() - s[used].sum())
+            used.append(i)
+        for i in order:
+            ref[i] += prob
+    assert np.allclose(place_probabilities(p, k, disc), ref, atol=1e-12)

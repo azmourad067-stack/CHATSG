@@ -5,7 +5,7 @@ Laboratoire d'intelligence prédictive hippique (marché français, courses PMU)
 connexion à un compte opérateur, aucune garantie de gain.
 
 - Audit et architecture : [`docs/00_audit_et_architecture.md`](docs/00_audit_et_architecture.md)
-- État d'avancement : phases 1 (données), 2 (moteur prédictif) et **3 (intelligence avancée)** livrées
+- État d'avancement : phases 1, 2, 3 et **5 (validation)** livrées ; phase 4 (deep learning) différée faute de volume
 
 ## Ce qui fonctionne aujourd'hui (phase 1)
 
@@ -21,7 +21,7 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
 | Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Laboratoire IA, Backtesting, Fiche cheval, Configuration |
-| Tests | 108 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Tests | 121 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, simulateur de paris, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
 ## Phase 2 — premier moteur prédictif
 
@@ -58,6 +58,25 @@ python scripts/train_models.py
 ```bash
 python scripts/run_discovery.py
 ```
+
+## Phase 5 — validation
+
+| Brique | Contenu |
+|---|---|
+| Simulateur de paris | Décision sur probabilités hors échantillon et cote de référence antérieure ; règlement au **rapport définitif officiel**. Mise fixe ou Kelly fractionné (théorique). ROI avec IC bootstrap, drawdown, pire série. Courses sans rapport exclues et comptées |
+| Anti-surapprentissage | Règle choisie sur une période de sélection, appliquée telle quelle à une période de test postérieure ; repères sans modèle (favori gagnant/placé) |
+| Robustesse | Résultats par discipline, hippodrome, distance, taille du champ et période ; sensibilité aux données manquantes et à l'aléa d'apprentissage |
+| Audit des fuites | Exécuté sur la base réelle : cotes antérieures à la décision, permutation des résultats futurs, variable trop prédictive, agrégats de la source |
+
+```bash
+python scripts/backfill_payouts.py --start 2026-09-20 --end 2026-10-29
+```
+
+```bash
+python scripts/run_backtest.py
+```
+
+Résultats : `docs/03_resultats_phase5.md`. Aucune stratégie n'est rentable hors échantillon.
 
 ## Installation locale
 

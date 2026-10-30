@@ -95,7 +95,10 @@ def select_bets(pred: pd.DataFrame, s: Strategy) -> pd.DataFrame:
         f = f[(f["p_place"] >= s.min_prob) & (f["mkt_odds"] <= s.max_odds)]
         score = f["p_place"]
     if s.one_per_race and not f.empty:
-        f = f.loc[score.groupby(f["race_id"]).idxmax()]
+        # départage déterministe des égalités (cotes identiques) : plus petit numéro
+        order = f.assign(_score=score.round(10)).sort_values(
+            ["race_id", "_score", "num_pmu"], ascending=[True, False, True])
+        f = f.loc[order.drop_duplicates("race_id").index]
     return f.sort_values(["race_date", "race_id"])
 
 

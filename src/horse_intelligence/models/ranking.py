@@ -151,6 +151,8 @@ def place_probabilities(p_win: npt.ArrayLike, n_places: int,
         return np.ones(n)
     strengths = [np.power(np.clip(p, 1e-12, None), discounts[min(k, len(discounts) - 1)])
                  for k in range(n_places)]
+    if n_places <= 3:
+        return _place_vectorized(strengths, n_places)
     for order in permutations(range(n), n_places):
         prob = 1.0
         used: list[int] = []
@@ -161,4 +163,34 @@ def place_probabilities(p_win: npt.ArrayLike, n_places: int,
             used.append(i)
         for i in order:
             out[i] += prob
+    return out
+
+
+def _place_vectorized(strengths: list[FloatArray], n_places: int) -> FloatArray:
+    """Même calcul exact que l'énumération, sous forme matricielle (n ≤ ~30)."""
+    s1 = strengths[0]
+    n = s1.size
+    first = s1 / s1.sum()
+    out = first.copy()
+    if n_places == 1:
+        return out
+    s2 = strengths[1]
+    eye = np.eye(n, dtype=bool)
+    # m2[j, k] = P(k deuxième | j premier)
+    m2 = np.where(eye, 0.0, s2[None, :] / (s2.sum() - s2[:, None]))
+    second = first @ m2
+    out += second
+    if n_places == 2:
+        return out
+    s3 = strengths[2]
+    # t[j, k, i] = P(j 1er) · P(k 2e | j) · P(i 3e | j, k)
+    denom = s3.sum() - s3[:, None] - s3[None, :]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cond3 = s3[None, None, :] / denom[:, :, None]
+    i_idx = np.arange(n)
+    valid = ((i_idx[None, None, :] != i_idx[:, None, None])
+             & (i_idx[None, None, :] != i_idx[None, :, None])
+             & ~eye[:, :, None])
+    t = np.where(valid, first[:, None, None] * m2[:, :, None] * cond3, 0.0)
+    out += t.sum(axis=(0, 1))
     return out
