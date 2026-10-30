@@ -57,7 +57,9 @@ def render() -> None:
                  width="stretch")
 
     st.subheader("Calibration")
-    choice = st.selectbox("Modèle", list(rep["calibration"]),
+    options = list(rep["calibration"])
+    default = options.index("lgbm_market") if "lgbm_market" in options else 0
+    choice = st.selectbox("Modèle", options, index=default,
                           format_func=lambda k: LABELS.get(k, k))
     cal = pd.DataFrame(rep["calibration"][choice])
     fig = go.Figure()

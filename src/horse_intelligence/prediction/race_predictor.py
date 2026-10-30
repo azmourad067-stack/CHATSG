@@ -35,6 +35,7 @@ class RacePrediction:
     primary: str | None = None
     n_places: int = 0
     has_market: bool = False
+    in_sample: bool = False           # course incluse dans l'apprentissage du modèle
 
 
 def _quality_status(engine: Engine, race_id: int) -> tuple[str, list[dict[str, Any]]]:
@@ -91,7 +92,8 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     probs: dict[str, np.ndarray] = {}
     meta_out: dict[str, dict[str, Any]] = {}
     for family, (meta, payload) in models.items():
-        meta_out[family] = {"version": meta["version"], "status": meta["status"]}
+        meta_out[family] = {"version": meta["version"], "status": meta["status"],
+                            "train_end": meta["train_end"]}
         if family == "market_calibrated":
             if has_market:
                 cl = ConditionalLogit.from_dict(payload["calibrator"])
@@ -130,5 +132,10 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     msg = ("Modèle validé." if meta_out[primary]["status"] == "active" else
            "Modèle CANDIDAT non validé : il n'a pas démontré d'amélioration significative "
            "par rapport au marché. Estimations à titre expérimental.")
+    train_end = meta_out[primary]["train_end"]
+    in_sample = train_end is not None and race_date <= train_end
+    if in_sample:
+        msg += (" Cette course fait partie de la période d'apprentissage : l'estimation "
+                "n'est pas indépendante de son résultat.")
     return RacePrediction(race_id, status, msg, table.sort_values("rank").reset_index(drop=True),
-                          meta_out, primary, n_places, has_market)
+                          meta_out, primary, n_places, has_market, in_sample)

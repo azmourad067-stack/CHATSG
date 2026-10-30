@@ -87,6 +87,9 @@ def test_predict_upcoming_race(trained) -> None:  # type: ignore[no-untyped-def]
     assert first.status in ("verified", "partial")
     pd.testing.assert_frame_equal(t, again.table)  # reproductible
     assert "non validé" in first.message
+    assert not first.in_sample  # dernier jour sans résultat : hors apprentissage
+    trained_race = int(repo.races_on(START_DAY + timedelta(days=3))["race_id"].iloc[0])
+    assert predict_race(repo.engine, trained_race).in_sample
 
 
 def test_predict_without_model(repo: Repository) -> None:
