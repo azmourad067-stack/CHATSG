@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.conftest import RACE_DAY, START, make_raw
 from tests.test_no_data_leakage import FakePmu
 
@@ -39,6 +39,24 @@ def test_reingest_is_idempotent(repo: Repository) -> None:
     assert _count(repo, db.race_entries) == n_entries
     assert _count(repo, db.odds_snapshots) == n_odds
     assert repo.counts()["horses"] == 4
+
+
+def test_snapshot_writes_are_batched(repo: Repository) -> None:
+    """Base distante : le nombre de requêtes par course ne dépend pas du nombre de partants."""
+    statements: list[str] = []
+    event.listen(repo.engine, "before_cursor_execute",
+                 lambda *args: statements.append(args[2]))
+    calls: list[int] = []
+    original = repo.save_snapshot
+
+    def counted(*args, **kwargs):  # type: ignore[no-untyped-def]
+        before = len(statements)
+        original(*args, **kwargs)
+        calls.append(len(statements) - before)
+
+    repo.save_snapshot = counted  # type: ignore[method-assign]
+    ingest_day(RACE_DAY, FakePmu(START + timedelta(hours=2), True), repo)
+    assert calls and max(calls) <= 24, calls  # 4 référentiels × 3 + 8, au lieu de ~10 par partant
 
 
 def test_raw_payloads_are_traceable(repo: Repository) -> None:

@@ -119,13 +119,6 @@ class Repository:
         res = conn.execute(insert(table).values(**key, **extra))
         return _pk(res)
 
-    def _person(self, conn: Connection, table: Table, pk: str, name: str | None) -> int | None:
-        canon = canonical_name(name)
-        if canon is None or name is None:
-            return None
-        return self._get_or_create(conn, table, pk, {"canonical_name": canon},
-                                   {"display_name": name})
-
     def _racecourse(self, conn: Connection, race: RaceRecord) -> int:
         return self._get_or_create(conn, db.racecourses, "racecourse_id",
                                    {"code": race.racecourse_code},
@@ -158,29 +151,82 @@ class Repository:
             return race_id
 
     # ---------------------------------------------------------------- instantanés
+    # Chaque écriture regroupe ses requêtes : la base distante (Supabase, ~0,1 s par
+    # aller-retour depuis GitHub Actions) impose de ne pas interroger ligne par ligne.
+    @staticmethod
+    def _resolve(conn: Connection, table: Table, pk: str, keys: Sequence[str],
+                 wanted: dict[tuple[Any, ...], dict[str, Any]]) -> dict[tuple[Any, ...], int]:
+        """Identifiants des lignes de référentiel `wanted` (clé -> valeurs d'insertion),
+        créées si absentes. La première colonne de `keys` sert de filtre."""
+        if not wanted:
+            return {}
+        cols = [table.c[k] for k in keys]
+
+        def fetch() -> dict[tuple[Any, ...], int]:
+            rows = conn.execute(select(table.c[pk], *cols).where(
+                cols[0].in_({k[0] for k in wanted}))).all()
+            return {tuple(r[1:]): int(r[0]) for r in rows}
+
+        found = fetch()
+        missing = [{**dict(zip(keys, k, strict=True)), **extra}
+                   for k, extra in wanted.items() if k not in found]
+        if missing:
+            conn.execute(insert(table), missing)
+            found = fetch()
+        return {k: found[k] for k in wanted}
+
+    def _people(self, conn: Connection, table: Table, pk: str,
+                names: Sequence[str | None]) -> dict[str, int]:
+        wanted: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for name in names:
+            canon = canonical_name(name)
+            if canon is not None and name is not None:
+                wanted.setdefault((canon,), {"display_name": name})
+        return {k[0]: v for k, v in self._resolve(conn, table, pk, ["canonical_name"],
+                                                    wanted).items()}
+
+    @staticmethod
+    def _person_id(ids: dict[str, int], name: str | None) -> int | None:
+        canon = canonical_name(name)
+        return ids.get(canon) if canon is not None else None
+
+    @staticmethod
+    def _existing_payouts(conn: Connection, race_id: int) -> set[tuple[Any, ...]]:
+        p = db.payouts
+        return {tuple(r) for r in conn.execute(
+            select(p.c.pool, p.c.bet_type, p.c.combination).where(p.c.race_id == race_id))}
+
     def save_snapshot(self, race_id: int, snap: RaceSnapshot, payload_id: int | None) -> None:
         after = snap.observed_after_start
         with self.engine.begin() as conn:
+            horses = self._resolve(conn, db.horses, "horse_id", ["canonical_name", "birth_year"], {
+                (e.horse_canonical, e.birth_year):
+                    {"display_name": e.horse_name, "breed": e.breed, "sex_last": e.sex}
+                for e in snap.entries})
+            jockeys = self._people(conn, db.jockeys, "jockey_id",
+                                   [e.rider_name for e in snap.entries])
+            trainers = self._people(conn, db.trainers, "trainer_id",
+                                    [e.trainer_name for e in snap.entries])
+            owners = self._people(conn, db.owners, "owner_id",
+                                  [e.owner_name for e in snap.entries])
+
+            re_ = db.race_entries
+            last_hash = {r.num_pmu: r.content_hash for r in conn.execute(
+                select(re_.c.num_pmu, re_.c.content_hash).where(re_.c.race_id == race_id)
+                .order_by(re_.c.observed_at, re_.c.entry_id))}
             horse_ids: dict[int, int] = {}
+            new_entries = []
             for e in snap.entries:
-                horse_id = self._get_or_create(
-                    conn, db.horses, "horse_id",
-                    {"canonical_name": e.horse_canonical, "birth_year": e.birth_year},
-                    {"display_name": e.horse_name, "breed": e.breed, "sex_last": e.sex})
-                horse_ids[e.num_pmu] = horse_id
+                horse_ids[e.num_pmu] = horses[(e.horse_canonical, e.birth_year)]
                 h = _entry_hash(e)
-                last = conn.execute(
-                    select(db.race_entries.c.content_hash)
-                    .where(and_(db.race_entries.c.race_id == race_id,
-                                db.race_entries.c.num_pmu == e.num_pmu))
-                    .order_by(db.race_entries.c.observed_at.desc()).limit(1)).first()
-                if last and last[0] == h:
+                if last_hash.get(e.num_pmu) == h:
                     continue  # aucune modification depuis la dernière observation
-                conn.execute(insert(db.race_entries).values(
-                    race_id=race_id, num_pmu=e.num_pmu, horse_id=horse_id,
-                    jockey_id=self._person(conn, db.jockeys, "jockey_id", e.rider_name),
-                    trainer_id=self._person(conn, db.trainers, "trainer_id", e.trainer_name),
-                    owner_id=self._person(conn, db.owners, "owner_id", e.owner_name),
+                last_hash[e.num_pmu] = h
+                new_entries.append(dict(
+                    race_id=race_id, num_pmu=e.num_pmu, horse_id=horse_ids[e.num_pmu],
+                    jockey_id=self._person_id(jockeys, e.rider_name),
+                    trainer_id=self._person_id(trainers, e.trainer_name),
+                    owner_id=self._person_id(owners, e.owner_name),
                     age=e.age, sex=e.sex, draw=e.draw, weight_kg=e.weight_kg,
                     weight_carried_kg=e.weight_carried_kg,
                     handicap_distance_m=e.handicap_distance_m, blinkers=e.blinkers,
@@ -189,71 +235,73 @@ class Repository:
                     career_places=e.career_places, career_earnings=e.career_earnings,
                     observed_at=snap.observed_at, observed_after_start=after,
                     content_hash=h, payload_id=payload_id))
+            if new_entries:
+                conn.execute(insert(re_), new_entries)
 
-            if after:
+            if after and snap.results:
+                rr = db.race_results
+                existing = {r.num_pmu: r.result_id for r in conn.execute(
+                    select(rr.c.num_pmu, rr.c.result_id).where(rr.c.race_id == race_id))}
+                new_results = []
                 for r in snap.results:
                     if r.num_pmu not in horse_ids:
                         continue
-                    exists = conn.execute(select(db.race_results.c.result_id).where(and_(
-                        db.race_results.c.race_id == race_id,
-                        db.race_results.c.num_pmu == r.num_pmu))).first()
                     values = {"horse_id": horse_ids[r.num_pmu],
                               "finish_position": r.finish_position, "incident": r.incident,
                               "time_s": r.time_s, "reduction_km_s": r.reduction_km_s,
                               "observed_at": snap.observed_at, "payload_id": payload_id}
-                    if exists:
-                        conn.execute(update(db.race_results)
-                                     .where(db.race_results.c.result_id == exists[0])
+                    if r.num_pmu in existing:
+                        conn.execute(update(rr).where(rr.c.result_id == existing[r.num_pmu])
                                      .values(**values))
                     else:
-                        conn.execute(insert(db.race_results).values(
-                            race_id=race_id, num_pmu=r.num_pmu, **values))
+                        new_results.append({"race_id": race_id, "num_pmu": r.num_pmu, **values})
+                if new_results:
+                    conn.execute(insert(rr), new_results)
 
-            for o in snap.odds:
-                last_odds = conn.execute(
-                    select(db.odds_snapshots.c.odds, db.odds_snapshots.c.published_at)
-                    .where(and_(db.odds_snapshots.c.race_id == race_id,
-                                db.odds_snapshots.c.num_pmu == o.num_pmu,
-                                db.odds_snapshots.c.pool == o.pool,
-                                db.odds_snapshots.c.bet_type == o.bet_type,
-                                db.odds_snapshots.c.odds_kind == o.odds_kind))
-                    .order_by(db.odds_snapshots.c.observed_at.desc()).limit(1)).first()
-                if last_odds and last_odds.odds == o.odds \
-                        and last_odds.published_at == o.published_at:
-                    continue
-                conn.execute(insert(db.odds_snapshots).values(
-                    race_id=race_id, num_pmu=o.num_pmu, bet_type=o.bet_type, pool=o.pool,
-                    odds_kind=o.odds_kind, odds=o.odds, published_at=o.published_at,
-                    observed_at=snap.observed_at, payload_id=o.payload_id or payload_id))
+            if snap.odds:
+                os_ = db.odds_snapshots
+                last_odds = {(r.num_pmu, r.pool, r.bet_type, r.odds_kind): (r.odds, r.published_at)
+                             for r in conn.execute(
+                    select(os_.c.num_pmu, os_.c.pool, os_.c.bet_type, os_.c.odds_kind,
+                           os_.c.odds, os_.c.published_at).where(os_.c.race_id == race_id)
+                    .order_by(os_.c.observed_at, os_.c.odds_id))}
+                new_odds = []
+                for o in snap.odds:
+                    key = (o.num_pmu, o.pool, o.bet_type, o.odds_kind)
+                    if last_odds.get(key) == (o.odds, o.published_at):
+                        continue
+                    last_odds[key] = (o.odds, o.published_at)
+                    new_odds.append(dict(
+                        race_id=race_id, num_pmu=o.num_pmu, bet_type=o.bet_type, pool=o.pool,
+                        odds_kind=o.odds_kind, odds=o.odds, published_at=o.published_at,
+                        observed_at=snap.observed_at, payload_id=o.payload_id or payload_id))
+                if new_odds:
+                    conn.execute(insert(os_), new_odds)
 
-            for p in snap.payouts:
-                exists = conn.execute(select(db.payouts.c.payout_id).where(and_(
-                    db.payouts.c.race_id == race_id, db.payouts.c.pool == p.pool,
-                    db.payouts.c.bet_type == p.bet_type,
-                    db.payouts.c.combination == p.combination))).first()
-                if not exists:
-                    conn.execute(insert(db.payouts).values(
-                        race_id=race_id, pool=p.pool, bet_type=p.bet_type,
-                        combination=p.combination, payout_per_eur=p.payout_per_eur,
-                        observed_at=snap.observed_at, payload_id=p.payload_id))
+            if snap.payouts:
+                self._insert_payouts(conn, race_id, snap.payouts, snap.observed_at)
+
+    def _insert_payouts(self, conn: Connection, race_id: int, payouts: Sequence[PayoutRecord],
+                        observed_at: datetime) -> int:
+        seen = self._existing_payouts(conn, race_id)
+        rows = []
+        for p in payouts:
+            key = (p.pool, p.bet_type, p.combination)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(dict(race_id=race_id, pool=p.pool, bet_type=p.bet_type,
+                             combination=p.combination, payout_per_eur=p.payout_per_eur,
+                             observed_at=observed_at, payload_id=p.payload_id))
+        if rows:
+            conn.execute(insert(db.payouts), rows)
+        return len(rows)
 
     def save_payouts(self, race_id: int, payouts: Sequence[PayoutRecord],
                      observed_at: datetime) -> int:
         """Ajoute des rapports définitifs (idempotent). Renvoie le nombre de lignes ajoutées."""
-        added = 0
         with self.engine.begin() as conn:
-            for p in payouts:
-                exists = conn.execute(select(db.payouts.c.payout_id).where(and_(
-                    db.payouts.c.race_id == race_id, db.payouts.c.pool == p.pool,
-                    db.payouts.c.bet_type == p.bet_type,
-                    db.payouts.c.combination == p.combination))).first()
-                if not exists:
-                    conn.execute(insert(db.payouts).values(
-                        race_id=race_id, pool=p.pool, bet_type=p.bet_type,
-                        combination=p.combination, payout_per_eur=p.payout_per_eur,
-                        observed_at=observed_at, payload_id=p.payload_id))
-                    added += 1
-        return added
+            return self._insert_payouts(conn, race_id, payouts, observed_at)
 
     def has_results(self, race_date: date, reunion_num: int, course_num: int) -> bool:
         r, res = db.races, db.race_results
