@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, text
 
+from horse_intelligence.data.storage import blob_store
 from horse_intelligence.evaluation.betting_simulator import (
     reference_strategies,
     select_then_test,
@@ -33,6 +33,7 @@ from horse_intelligence.services.training import (
 MODELS = ("lgbm_market", "lgbm_form", REFERENCE_MODEL)
 MASK_SHARE = 0.2
 SEEDS = (1, 2, 3)
+VALIDATION_KEY = "reports/validation-latest.json"
 
 
 def _with_market(f: pd.DataFrame) -> pd.DataFrame:
@@ -72,8 +73,8 @@ def _robustness(raw: dict[str, pd.DataFrame], test_days: int = 7,
     }
 
 
-def run_validation(engine: Engine, reports_dir: Path) -> dict[str, Any]:
-    pred = load_oos_predictions(reports_dir)
+def run_validation(engine: Engine) -> dict[str, Any]:
+    pred = load_oos_predictions(engine)
     if pred is None:
         raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
     with engine.connect() as conn:
@@ -98,16 +99,13 @@ def run_validation(engine: Engine, reports_dir: Path) -> dict[str, Any]:
         "segments": segments, "stability": stability_summary(segments),
         "robustness": _robustness(raw), "leakage": run_leakage_checks(raw),
     }
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    body = json.dumps(report, ensure_ascii=False, indent=2, default=str)
-    (reports_dir / f"validation-{datetime.now(UTC):%Y%m%d-%H%M%S}.json").write_text(body)
-    (reports_dir / "validation-latest.json").write_text(body)
+    report = json.loads(json.dumps(report, default=str))
+    blob_store.put_json(engine, f"reports/validation-{datetime.now(UTC):%Y%m%d-%H%M%S}.json",
+                        report)
+    blob_store.put_json(engine, VALIDATION_KEY, report)
     return report
 
 
-def latest_validation(reports_dir: Path) -> dict[str, Any] | None:
-    path = reports_dir / "validation-latest.json"
-    if not path.exists():
-        return None
-    data: dict[str, Any] = json.loads(path.read_text())
+def latest_validation(engine: Engine) -> dict[str, Any] | None:
+    data: dict[str, Any] | None = blob_store.get_json(engine, VALIDATION_KEY)
     return data

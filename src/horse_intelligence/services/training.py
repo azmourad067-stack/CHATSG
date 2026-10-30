@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import Engine
 
+from horse_intelligence.data.storage import blob_store
 from horse_intelligence.evaluation.metrics import (
     calibration_table,
     compute_metrics,
@@ -52,6 +51,8 @@ LGBM_FEATURES = NUMERIC_FEATURES + CATEGORICAL
 REFERENCE_MODEL = "market_calibrated"
 CANDIDATES = ("lgbm_form", "lgbm_market", "form_logit")
 MIN_RACES_FOR_PROMOTION = 300
+WF_REPORT_KEY = "reports/walk_forward-latest.json"
+WF_PREDICTIONS_KEY = "reports/walk_forward_predictions-latest.parquet"
 OOS_COLUMNS = ["race_id", "race_date", "num_pmu", "fold", "won", "finish_position",
                "n_runners", "declared_runners", "discipline", "distance_m", "racecourse",
                "mkt_prob", "mkt_odds", "mkt_pool", "mkt_rank"]
@@ -141,9 +142,9 @@ def _version() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
 
 
-def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
-                       min_train_days: int = 21, test_days: int = 7, calib_days: int = 7,
-                       register: bool = True, n_members: int = N_MEMBERS) -> TrainingReport:
+def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                       calib_days: int = 7, register: bool = True,
+                       n_members: int = N_MEMBERS) -> TrainingReport:
     raw = load_raw(engine)
     ds = build_dataset(raw)
     audit = audit_source_aggregates(ds.frame)
@@ -214,7 +215,7 @@ def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
             payload = {**payload, "family": family, "version": version,
                        "feature_set": FEATURE_SET_VERSION,
                        "use_source_aggregates": audit.passed}
-            path, sha = save_artifact(models_dir, family, version, payload)
+            uri, sha = save_artifact(engine, family, version, payload)
             m = market_races.get(family, {})
             metric_rows = [{"eval_protocol": "walk_forward", "period_start": dates[0],
                             "period_end": dates[-1], "segment": "courses_avec_marche",
@@ -226,30 +227,47 @@ def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
                                     "metric": f"log_loss_diff_vs_{REFERENCE_MODEL}",
                                     "value": cmp["mean_diff"], "ci_low": cmp["ci_low"],
                                     "ci_high": cmp["ci_high"], "n_races": cmp["n_races"]})
-            model_id = register_model(engine, family, version, path, sha, dates[0], dates[-1],
+            model_id = register_model(engine, family, version, uri, sha, dates[0], dates[-1],
                                       {"min_train_days": min_train_days,
                                        "test_days": test_days, "calib_days": calib_days},
                                       metric_rows, promote)
             report.registered[family] = {"model_id": model_id, "version": version,
                                          "status": "active" if promote else "candidate",
-                                         "artifact": path.name}
+                                         "artifact": uri}
 
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    out = reports_dir / f"walk_forward-{_version()}.json"
-    out.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2, default=str))
-    (reports_dir / "walk_forward-latest.json").write_text(out.read_text())
+    body = asdict(report)
+    blob_store.put_json(engine, f"reports/walk_forward-{_version()}.json", body)
+    blob_store.put_json(engine, WF_REPORT_KEY, body)
     # prédictions hors échantillon : seule base légitime pour simuler des paris (phase 5)
     keep = [*OOS_COLUMNS, *names]
-    evald[[c for c in keep if c in evald.columns]].to_parquet(
-        reports_dir / "walk_forward_predictions-latest.parquet", index=False)
+    oos = evald[[c for c in keep if c in evald.columns]].copy()
+    for c in ("discipline", "racecourse"):
+        oos[c] = oos[c].astype(object)
+    blob_store.put_frame(engine, WF_PREDICTIONS_KEY, oos)
+    _prune_artifacts(engine)
     return report
 
 
-def latest_report(reports_dir: Path) -> dict[str, Any] | None:
-    path = reports_dir / "walk_forward-latest.json"
-    if not path.exists():
-        return None
-    data: dict[str, Any] = json.loads(path.read_text())
+KEEP_MODEL_VERSIONS = 3
+KEEP_REPORTS = 5
+
+
+def _prune_artifacts(engine: Engine) -> None:
+    """Base gratuite limitée : on garde les 3 dernières versions de chaque famille (retour
+    arrière possible) et toujours l'artefact du modèle actif."""
+    from horse_intelligence.models.registry import latest_model
+
+    active = {m["artifact_uri"].removeprefix(blob_store.URI_PREFIX)
+              for f in ("lgbm_market", "lgbm_form", REFERENCE_MODEL)
+              if (m := latest_model(engine, f, ("active",))) is not None}
+    for family in ("lgbm_market", "lgbm_form", REFERENCE_MODEL):
+        blob_store.prune(engine, f"models/{family}-", KEEP_MODEL_VERSIONS, active)
+    for kind in ("walk_forward-", "lab-", "validation-"):
+        blob_store.prune(engine, f"reports/{kind}", KEEP_REPORTS)
+
+
+def latest_report(engine: Engine) -> dict[str, Any] | None:
+    data: dict[str, Any] | None = blob_store.get_json(engine, WF_REPORT_KEY)
     return data
 
 
@@ -258,6 +276,5 @@ def report_period(report: dict[str, Any]) -> tuple[date, date]:
     return date.fromisoformat(a), date.fromisoformat(b)
 
 
-def load_oos_predictions(reports_dir: Path) -> pd.DataFrame | None:
-    path = reports_dir / "walk_forward_predictions-latest.parquet"
-    return pd.read_parquet(path) if path.exists() else None
+def load_oos_predictions(engine: Engine) -> pd.DataFrame | None:
+    return blob_store.get_frame(engine, WF_PREDICTIONS_KEY)

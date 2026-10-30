@@ -1,35 +1,28 @@
-# Collecte planifiée des données PMU.
-# Nécessite le secret DATABASE_URL (PostgreSQL persistant, ex. offre gratuite
-# Supabase/Neon, format postgresql+psycopg://...). Sans ce secret, le job s'arrête
-# sans rien faire : une base SQLite serait perdue à la fin du job.
+# Collecte intrajournalière légère + prédictions figées avant départ.
+# Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
+# Coût : ~1 min par exécution, 24 exécutions/jour ≈ 720 min/mois (gratuit en dépôt public ;
+# quota de 2 000 min/mois en dépôt privé).
 name: collect
 
 on:
   schedule:
-    # Toutes les 30 min de 9 h à 22 h UTC : historise cotes et non-partants avant
-    # départ, puis les résultats. GitHub ne garantit pas la ponctualité des cron.
-    - cron: "7,37 9-22 * * *"
+    - cron: "7,37 10-21 * * *"   # toutes les 30 min, 10 h-22 h UTC (courses françaises)
   workflow_dispatch:
-    inputs:
-      date:
-        description: "Date AAAA-MM-JJ (vide = aujourd'hui)"
-        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: collect
+  group: database-writes
   cancel-in-progress: false
 
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       HI_DATA_DIR: ${{ github.workspace }}/data_store
-      TARGET_DATE: ${{ github.event.inputs.date }}
     steps:
       - name: Vérifier la configuration
         id: cfg
@@ -47,19 +40,9 @@ jobs:
           cache: pip
       - if: steps.cfg.outputs.skip != 'true'
         run: pip install -r requirements.txt "psycopg[binary]>=3.2"
-      - name: Collecte
+      - name: Cotes avant départ et résultats récents
         if: steps.cfg.outputs.skip != 'true'
-        run: |
-          if [ -n "$TARGET_DATE" ]; then
-            python scripts/refresh_data.py --date "$TARGET_DATE"
-          else
-            python scripts/refresh_data.py
-          fi
-      # Les réponses brutes (traçabilité) sont conservées comme artefact du job.
-      - uses: actions/upload-artifact@v4
-        if: steps.cfg.outputs.skip != 'true' && always()
-        with:
-          name: raw-payloads-${{ github.run_id }}
-          path: data_store/raw
-          retention-days: 90
-          if-no-files-found: ignore
+        run: python scripts/refresh_data.py --countries FRA --window-minutes 75
+      - name: Prédictions figées avant départ
+        if: steps.cfg.outputs.skip != 'true'
+        run: python scripts/predict_upcoming.py --window-minutes 75

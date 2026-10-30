@@ -10,13 +10,13 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import Engine, insert, select, update
 
+from horse_intelligence.data.storage import blob_store
 from horse_intelligence.data.storage import database as db
 from horse_intelligence.intelligence.anomaly_detection import fit_scores, test_top_anomalies
 from horse_intelligence.intelligence.bayesian_analysis import (
@@ -35,6 +35,7 @@ from horse_intelligence.intelligence.uncertainty import OodScorer
 from horse_intelligence.monitoring.drift_detection import feature_drift, weekly_market_quality
 
 CONFIRM_SHARE = 0.4
+LAB_REPORT_KEY = "reports/lab-latest.json"
 RECENT_DAYS = 7
 ANOMALY_FEATURES = [f for f in FORM_FEATURES if f not in ("n_runners", "distance_m",
                                                           "log_prize")]
@@ -105,7 +106,7 @@ def _store_patterns(engine: Engine, patterns: list[dict[str, Any]], disc: tuple[
                 conn.execute(insert(dp).values(**values, history_json=[entry]))
 
 
-def run_lab(engine: Engine, reports_dir: Path, confirm_share: float = CONFIRM_SHARE,
+def run_lab(engine: Engine, confirm_share: float = CONFIRM_SHARE,
             store: bool = True) -> LabReport:
     raw = load_raw(engine)
     ds = build_dataset(raw)
@@ -171,18 +172,14 @@ def run_lab(engine: Engine, reports_dir: Path, confirm_share: float = CONFIRM_SH
 
     report = LabReport(now.isoformat(), disc_period, conf_period, n_tests, patterns, actors,
                        anomalies, drift, warnings)
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    body = json.dumps(asdict(report), ensure_ascii=False, indent=2, default=str)
-    (reports_dir / f"lab-{now:%Y%m%d-%H%M%S}.json").write_text(body)
-    (reports_dir / "lab-latest.json").write_text(body)
+    body = json.loads(json.dumps(asdict(report), default=str))
+    blob_store.put_json(engine, f"reports/lab-{now:%Y%m%d-%H%M%S}.json", body)
+    blob_store.put_json(engine, LAB_REPORT_KEY, body)
     return report
 
 
-def latest_lab_report(reports_dir: Path) -> dict[str, Any] | None:
-    path = reports_dir / "lab-latest.json"
-    if not path.exists():
-        return None
-    data: dict[str, Any] = json.loads(path.read_text())
+def latest_lab_report(engine: Engine) -> dict[str, Any] | None:
+    data: dict[str, Any] | None = blob_store.get_json(engine, LAB_REPORT_KEY)
     return data
 
 

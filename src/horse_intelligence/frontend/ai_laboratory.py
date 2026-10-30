@@ -109,7 +109,7 @@ def _drift(rep: dict[str, Any]) -> None:
 
 def render() -> None:
     st.title("Laboratoire IA")
-    rep = latest_lab_report(get_context().settings.reports_dir)
+    rep = latest_lab_report(get_context().repo.engine)
     if rep is None:
         notice("Aucune analyse disponible. Lancez : python scripts/run_discovery.py")
         return

@@ -5,7 +5,8 @@ Laboratoire d'intelligence prédictive hippique (marché français, courses PMU)
 connexion à un compte opérateur, aucune garantie de gain.
 
 - Audit et architecture : [`docs/00_audit_et_architecture.md`](docs/00_audit_et_architecture.md)
-- État d'avancement : phases 1, 2, 3 et **5 (validation)** livrées ; phase 4 (deep learning) différée faute de volume
+- État d'avancement : phases 1, 2, 3, 5 et **6 (déploiement)** livrées ; phase 4 (deep learning) différée faute de volume
+- Guide de déploiement : [`docs/04_deploiement.md`](docs/04_deploiement.md)
 
 ## Ce qui fonctionne aujourd'hui (phase 1)
 
@@ -21,7 +22,7 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
 | Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Laboratoire IA, Backtesting, Fiche cheval, Configuration |
-| Tests | 119 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, simulateur de paris, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Tests | 124 tests, rejoués sur SQLite et PostgreSQL 16 en CI (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, simulateur de paris, sécurité, pages Streamlit, déploiement) + Ruff + Mypy en CI |
 
 ## Phase 2 — premier moteur prédictif
 
@@ -138,18 +139,18 @@ Les secrets se placent dans des variables d'environnement ou dans
 
 Pour PostgreSQL, installer en plus le pilote : `pip install "psycopg[binary]"`.
 
-## Déploiement Streamlit Community Cloud
+## Phase 6 — déploiement
 
-1. Pousser le dépôt sur GitHub.
-2. Sur share.streamlit.io : *New app* → ce dépôt → fichier principal `app.py`, Python 3.12.
-3. Dans *Secrets*, renseigner `DATABASE_URL` (base persistante). Sans cela, l'application
-   démarre sur une base SQLite vide et éphémère et l'indique sur le tableau de bord.
-4. Déployer, vérifier les journaux, ouvrir le tableau de bord et la page Configuration.
+| Brique | Contenu |
+|---|---|
+| Base unique | PostgreSQL gratuit (Supabase ou Neon) : données, **modèles et rapports** (stockés en base avec empreinte SHA-256), purge automatique des anciennes versions |
+| Tâches planifiées | `collect` (toutes les 30 min : cotes avant départ, résultats récents, prédictions figées), `nightly` (journée complète ; dimanche : réentraînement, laboratoire, validation), `backfill` (historique à la demande) |
+| Test en conditions réelles | Prédictions enregistrées avant le départ (instant, version, empreinte des entrées), confrontées aux résultats : évaluation sans fuite possible |
+| Application | Lecture seule (`HI_READ_ONLY`), modèles et variables en cache (0,2 s par prédiction) |
+| Exploitation | Fraîcheur de la collecte, suivi réel vs marché, retour arrière de modèle (`scripts/set_active_model.py`) |
+| CI | Ruff, Mypy, tests sur SQLite **et** PostgreSQL 16 |
 
-Streamlit Cloud ne sert qu'à la consultation. La collecte planifiée tourne dans
-GitHub Actions (`.github/workflows/collect.yml`) dès que le secret de dépôt
-`DATABASE_URL` est défini ; les réponses brutes y sont conservées 90 jours comme
-artefacts.
+Mode d'emploi complet : [`docs/04_deploiement.md`](docs/04_deploiement.md).
 
 ## Tests
 

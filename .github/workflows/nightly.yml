@@ -1,0 +1,67 @@
+# Chaque nuit : journée complète (résultats, rapports). Chaque dimanche : réentraînement
+# contrôlé (walk-forward), laboratoire et validation. Un modèle ne devient actif que s'il bat
+# significativement le marché (règle appliquée par scripts/train_models.py).
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 23 * * *"
+  workflow_dispatch:
+    inputs:
+      retrain:
+        description: "Forcer le réentraînement"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-writes
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+      FORCE_RETRAIN: ${{ github.event.inputs.retrain }}
+    steps:
+      - name: Vérifier la configuration
+        id: cfg
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Secret DATABASE_URL absent : tâche ignorée."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.cfg.outputs.skip != 'true'
+        run: pip install -r requirements-train.txt "psycopg[binary]>=3.2"
+      - name: Journée complète
+        if: steps.cfg.outputs.skip != 'true'
+        run: python scripts/refresh_data.py --countries FRA
+      - name: Réentraînement hebdomadaire et validation
+        if: steps.cfg.outputs.skip != 'true'
+        run: |
+          if [ "$(date -u +%u)" = "7" ] || [ "$FORCE_RETRAIN" = "true" ]; then
+            python scripts/train_models.py
+            python scripts/run_discovery.py
+            python scripts/run_backtest.py || echo "Audit des fuites en échec : voir le rapport"
+          else
+            echo "Pas de réentraînement aujourd'hui."
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.cfg.outputs.skip != 'true' && always()
+        with:
+          name: raw-payloads-${{ github.run_id }}
+          path: data_store/raw
+          retention-days: 30
+          if-no-files-found: ignore

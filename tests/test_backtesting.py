@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -43,8 +42,8 @@ def test_walk_forward_never_trains_on_test_dates() -> None:
 @pytest.fixture
 def trained(repo: Repository, tmp_path) -> tuple[Repository, object]:  # type: ignore[no-untyped-def]
     populate(repo, days=30, with_results_last_day=False)
-    rep = train_and_evaluate(repo.engine, tmp_path / "models", tmp_path / "reports",
-                             min_train_days=14, test_days=5, calib_days=4, n_members=3)
+    rep = train_and_evaluate(repo.engine, min_train_days=14, test_days=5, calib_days=4,
+                             n_members=3)
     return repo, rep
 
 
@@ -59,20 +58,26 @@ def test_end_to_end_training(trained, tmp_path) -> None:  # type: ignore[no-unty
     # échantillon trop petit : aucun modèle candidat promu, la référence est active
     assert rep.registered["lgbm_market"]["status"] == "candidate"
     assert rep.registered["market_calibrated"]["status"] == "active"
-    assert latest_report(tmp_path / "reports")["n_races"] == rep.n_races
+    assert latest_report(repo.engine)["n_races"] == rep.n_races
     meta = latest_model(repo.engine, "lgbm_form")
-    assert load_artifact(__import__("pathlib").Path(meta["artifact_uri"]),
+    assert meta["artifact_uri"].startswith("db://models/")
+    assert load_artifact(repo.engine, meta["artifact_uri"],
                          meta["artifact_sha256"])["family"] == "lgbm_form"
 
 
 def test_tampered_artifact_is_rejected(trained) -> None:  # type: ignore[no-untyped-def]
+    from sqlalchemy import update
+
+    from horse_intelligence.data.storage import database as db
+
     repo, _ = trained
-    from pathlib import Path
     meta = latest_model(repo.engine, "lgbm_form")
-    path = Path(meta["artifact_uri"])
-    path.write_text(path.read_text().replace('"lgbm_form"', '"autre"', 1))
+    key = meta["artifact_uri"].removeprefix("db://")
+    with repo.engine.begin() as conn:
+        conn.execute(update(db.stored_files).where(db.stored_files.c.key == key)
+                     .values(content=b'{"family": "autre"}'))
     with pytest.raises(ValueError, match="empreinte"):
-        load_artifact(path, meta["artifact_sha256"])
+        load_artifact(repo.engine, meta["artifact_uri"], meta["artifact_sha256"])
 
 
 def test_predict_upcoming_race(trained) -> None:  # type: ignore[no-untyped-def]
@@ -99,7 +104,7 @@ def test_predict_upcoming_race(trained) -> None:  # type: ignore[no-untyped-def]
     from horse_intelligence.models.lightgbm_model import LgbmRaceModel
     from horse_intelligence.models.registry import latest_model, load_artifact
     meta = latest_model(repo.engine, "lgbm_market")
-    model = LgbmRaceModel.from_dict(load_artifact(Path(meta["artifact_uri"])))
+    model = LgbmRaceModel.from_dict(load_artifact(repo.engine, meta["artifact_uri"]))
     frame = build_dataset(load_raw(repo.engine)).frame
     race = frame[frame["race_id"] == race_id]
     assert np.allclose(relative_contributions(model, race).sum(axis=0), 0.0)
@@ -117,25 +122,25 @@ def test_predict_without_model(repo: Repository) -> None:
 def test_training_requires_history(repo: Repository, tmp_path) -> None:  # type: ignore[no-untyped-def]
     populate(repo, days=5)
     with pytest.raises(ValueError, match="insuffisant"):
-        train_and_evaluate(repo.engine, tmp_path / "m", tmp_path / "r", min_train_days=21)
+        train_and_evaluate(repo.engine, min_train_days=21)
 
 
 def test_lab_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-untyped-def]
     from horse_intelligence.services.discovery import latest_lab_report, run_lab
 
     repo, _ = trained
-    rep = run_lab(repo.engine, tmp_path / "lab")
+    rep = run_lab(repo.engine)
     assert rep.n_tests > 0
     assert {"jockeys", "trainers"} <= set(rep.actors)
     assert rep.anomalies["examples"] and rep.drift["psi"]
-    assert latest_lab_report(tmp_path / "lab")["n_tests"] == rep.n_tests
+    assert latest_lab_report(repo.engine)["n_tests"] == rep.n_tests
 
 
 def test_validation_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-untyped-def]
     from horse_intelligence.services.validation import latest_validation, run_validation
 
     repo, _ = trained
-    rep = run_validation(repo.engine, tmp_path / "reports")
+    rep = run_validation(repo.engine)
     assert rep["races_with_payouts"] > 0
     assert all(c["passed"] for c in rep["leakage"]), rep["leakage"]
     assert rep["robustness"]["probabilities_valid"]
@@ -144,4 +149,4 @@ def test_validation_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-un
     # repère : parier tous les favoris d'un marché qui prélève ~15 % perd de l'argent
     fav = rep["references_all_period"][0]
     assert fav["n_bets"] > 0 and fav["roi"] < 0.1
-    assert latest_validation(tmp_path / "reports")["races"] == rep["races"]
+    assert latest_validation(repo.engine)["races"] == rep["races"]

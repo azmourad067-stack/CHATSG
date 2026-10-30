@@ -24,8 +24,7 @@ def main() -> int:
     configure_logging()
     ctx = build_context()
     try:
-        rep = train_and_evaluate(ctx.repo.engine, ctx.settings.models_dir,
-                                 ctx.settings.reports_dir, args.min_train_days, args.test_days,
+        rep = train_and_evaluate(ctx.repo.engine, args.min_train_days, args.test_days,
                                  args.calib_days, register=not args.no_register)
     except ValueError as exc:
         print(f"Entraînement impossible : {exc}", file=sys.stderr)

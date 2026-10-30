@@ -255,6 +255,15 @@ class Repository:
                     added += 1
         return added
 
+    def has_results(self, race_date: date, reunion_num: int, course_num: int) -> bool:
+        r, res = db.races, db.race_results
+        with self.engine.connect() as conn:
+            row = conn.execute(select(res.c.result_id).join(r, r.c.race_id == res.c.race_id)
+                               .where(and_(r.c.race_date == race_date,
+                                           r.c.reunion_num == reunion_num,
+                                           r.c.course_num == course_num)).limit(1)).first()
+        return row is not None
+
     def races_missing_payouts(self, pool: str, start: date, end: date) -> pd.DataFrame:
         r, p = db.races, db.payouts
         has = select(p.c.race_id).where(p.c.pool == pool).distinct()

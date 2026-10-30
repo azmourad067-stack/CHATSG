@@ -16,15 +16,48 @@ from horse_intelligence.frontend.components.cards import (
     status_badge,
 )
 from horse_intelligence.frontend.state import format_dt, get_context
-from horse_intelligence.prediction.race_predictor import RacePrediction, predict_race
+from horse_intelligence.prediction.race_predictor import (
+    LoadedFamily,
+    RacePrediction,
+    build_frame,
+    load_models,
+    models_use_source_aggregates,
+    predict_race,
+)
 
 MODEL_LABELS = {"lgbm_market": "LightGBM + marché", "lgbm_form": "LightGBM (forme seule)",
                 "market_calibrated": "Marché calibré"}
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _predict(race_id: int, _cache_key: str) -> RacePrediction:
-    return predict_race(get_context().repo.engine, race_id)
+@st.cache_resource(show_spinner=False)
+def _models(_version_key: str) -> dict[str, LoadedFamily]:
+    """Modèles désérialisés une seule fois par version (clé = versions en base)."""
+    return load_models(get_context().repo.engine)
+
+
+@st.cache_resource(show_spinner=False, max_entries=3)
+def _frame(day: date, _data_key: str, use_agg: bool) -> pd.DataFrame:
+    """Variables de toutes les courses jusqu'au jour choisi (une construction par jour)."""
+    return build_frame(get_context().repo.engine, day, use_agg)
+
+
+def _model_key() -> str:
+    from horse_intelligence.models.registry import latest_model
+
+    engine = get_context().repo.engine
+    metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated")]
+    return "|".join(str(m["version"]) if m else "-" for m in metas)
+
+
+def _predict(race_id: int, day: date) -> RacePrediction:
+    engine = get_context().repo.engine
+    mkey = _model_key()
+    models = _models(mkey)
+    if not models:
+        return predict_race(engine, race_id)
+    data_key = f"{mkey}|{get_context().repo.last_update()}"
+    frame = _frame(day, data_key, models_use_source_aggregates(models))
+    return predict_race(engine, race_id, frame=frame, models=models)
 
 
 def _pct(p: float | None) -> str:
@@ -143,5 +176,5 @@ def render() -> None:
     horses = dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
         if not entries.empty else {}
     with st.spinner("Calcul des probabilités…"):
-        pred = _predict(int(race_id), str(repo.last_update()))
+        pred = _predict(int(race_id), day if isinstance(day, date) else dates[0])
     _render_prediction(pred, horses)

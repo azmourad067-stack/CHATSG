@@ -1,0 +1,55 @@
+# Constitution de l'historique, déclenchée à la main (onglet Actions → backfill → Run).
+# Environ 1 min par journée de courses françaises : lancer par tranches de 2 à 3 mois
+# (limite de 6 h par tâche GitHub). Reprise automatique des journées déjà collectées.
+name: backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Date de début (AAAA-MM-JJ)"
+        required: true
+      end:
+        description: "Date de fin (AAAA-MM-JJ)"
+        required: true
+      payouts:
+        description: "Collecter aussi les rapports définitifs (simulation de paris)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-writes
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+      START: ${{ github.event.inputs.start }}
+      END: ${{ github.event.inputs.end }}
+      PAYOUTS: ${{ github.event.inputs.payouts }}
+    steps:
+      - name: Vérifier la configuration
+        run: |
+          test -n "$DATABASE_URL" || { echo "Secret DATABASE_URL absent."; exit 1; }
+          [[ "$START" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Date de début invalide"; exit 1; }
+          [[ "$END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Date de fin invalide"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt "psycopg[binary]>=3.2"
+      - name: Historique (courses françaises, masse Internet)
+        run: >-
+          python scripts/import_historical_data.py --start "$START" --end "$END"
+          --countries FRA --pools INTERNET --no-payouts
+      - name: Rapports définitifs
+        if: env.PAYOUTS == 'true'
+        run: python scripts/backfill_payouts.py --start "$START" --end "$END"

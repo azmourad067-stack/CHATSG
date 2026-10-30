@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import streamlit as st
 
 from horse_intelligence.frontend.components.cards import metric_card, notice
 from horse_intelligence.frontend.state import format_dt, get_context
+from horse_intelligence.models.registry import latest_model
+from horse_intelligence.monitoring.data_monitor import collection_health
+from horse_intelligence.monitoring.model_monitor import live_tracking
+from horse_intelligence.services.training import latest_report
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -29,6 +34,16 @@ def _sources() -> pd.DataFrame:
 @st.cache_data(ttl=60, show_spinner=False)
 def _runs() -> pd.DataFrame:
     return get_context().repo.recent_runs(10)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _live() -> dict[str, Any]:
+    return live_tracking(get_context().repo.engine)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _health() -> dict[str, Any]:
+    return collection_health(get_context().repo.engine)
 
 
 def _fmt(n: int) -> str:
@@ -55,14 +70,32 @@ def render() -> None:
         metric_card("Dernière collecte", format_dt(_last_update()))
 
     st.write("")
-    cols = st.columns(3)
+    engine = ctx.repo.engine
+    rep = latest_report(engine)
+    model = latest_model(engine, "lgbm_market")
+    live = _live()
+    health = _health()
+    cols = st.columns(4)
     with cols[0]:
-        metric_card("Modèle actif", "Aucun", "Phase 2 : aucun modèle entraîné ni validé")
+        metric_card("Modèle principal",
+                    f"{model['status']}" if model else "aucun",
+                    f"LightGBM + marché v{model['version']}" if model else
+                    "lancez scripts/train_models.py")
     with cols[1]:
-        metric_card("Performance historique", "Non mesurée",
-                    "Aucune métrique sans backtest indépendant")
+        if rep and "lgbm_market" in rep.get("vs_reference", {}):
+            d = rep["vs_reference"]["lgbm_market"]
+            metric_card("Validation glissante", f"{d['mean_diff']:+.4f}",
+                        f"Δ log-loss vs marché [{d['ci_low']:+.3f} ; {d['ci_high']:+.3f}]")
+        else:
+            metric_card("Validation glissante", "—", "aucune évaluation")
     with cols[2]:
-        metric_card("Apprentissage", "Inactif", "Cycles contrôlés prévus en phase 5")
+        vm = live.get("vs_market")
+        metric_card("Conditions réelles", f"{live['races']} courses",
+                    f"Δ log-loss vs marché {vm['mean_diff']:+.4f}" if vm and live["races"]
+                    else "prédictions figées avant départ")
+    with cols[3]:
+        metric_card("Collecte", "en retard" if health["stale"] else "à jour",
+                    health["message"])
 
     st.subheader("État des sources")
     sources = _sources()

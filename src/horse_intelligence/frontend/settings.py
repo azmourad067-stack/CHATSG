@@ -28,8 +28,9 @@ def render() -> None:
     if st.button("Tester la disponibilité des sources"):
         with st.spinner("Interrogation des sources…"):
             reports = check_all(ctx.collectors)
-        for r in reports:
-            ctx.repo.record_health(r)
+        if not ctx.settings.read_only:
+            for r in reports:
+                ctx.repo.record_health(r)
         st.cache_data.clear()
         st.dataframe(pd.DataFrame([{"Source": r.source, "État": r.status.value,
                                     "Message": r.message,

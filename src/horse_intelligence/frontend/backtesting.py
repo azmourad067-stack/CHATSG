@@ -21,7 +21,7 @@ LABELS = {"uniform": "Uniforme", "market": "Marché brut", REFERENCE_MODEL: "Mar
 
 def render() -> None:
     st.title("Backtesting")
-    rep = latest_report(get_context().settings.reports_dir)
+    rep = latest_report(get_context().repo.engine)
     if rep is None:
         notice("Aucune évaluation disponible. Lancez : python scripts/train_models.py")
         return
@@ -99,7 +99,7 @@ def _sim_row(label: str, r: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def render_validation() -> None:
-    val = latest_validation(get_context().settings.reports_dir)
+    val = latest_validation(get_context().repo.engine)
     st.header("Validation (phase 5)")
     if val is None:
         notice("Aucune validation disponible. Lancez : python scripts/run_backtest.py")

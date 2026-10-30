@@ -7,7 +7,7 @@ bloquant, partants absents) ou si aucun modèle n'est disponible.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -63,15 +63,42 @@ def _quality_status(engine: Engine, race_id: int) -> tuple[str, list[dict[str, A
     return str(row.status), list(row.checks_json or [])
 
 
-def _load_models(engine: Engine) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
-    out = {}
+@dataclass
+class LoadedFamily:
+    """Modèle chargé et désérialisé une fois (réutilisable entre prédictions)."""
+
+    meta: dict[str, Any]
+    payload: dict[str, Any]
+    lgbm: LgbmRaceModel | None = None
+    members: list[LgbmRaceModel] = field(default_factory=list)
+    calibrator: ConditionalLogit | None = None
+
+
+def load_models(engine: Engine) -> dict[str, LoadedFamily]:
+    out: dict[str, LoadedFamily] = {}
     for family in (*PRIMARY_ORDER, "market_calibrated"):
         meta = latest_model(engine, family)
         if meta is None:
             continue
-        payload = load_artifact(Path(meta["artifact_uri"]), meta["artifact_sha256"])
-        out[family] = (meta, payload)
+        payload = load_artifact(engine, meta["artifact_uri"], meta["artifact_sha256"])
+        if family == "market_calibrated":
+            out[family] = LoadedFamily(meta, payload,
+                                       calibrator=ConditionalLogit.from_dict(payload["calibrator"]))
+        else:
+            out[family] = LoadedFamily(
+                meta, payload, lgbm=LgbmRaceModel.from_dict(payload),
+                members=[LgbmRaceModel.from_dict(d) for d in payload.get("members", [])])
     return out
+
+
+def models_use_source_aggregates(models: dict[str, LoadedFamily]) -> bool:
+    return all(bool(f.payload.get("use_source_aggregates", True)) for f in models.values())
+
+
+def build_frame(engine: Engine, until: date, use_source_aggregates: bool = True
+                ) -> pd.DataFrame:
+    return build_dataset(load_raw(engine, until=until),
+                         use_source_aggregates=use_source_aggregates).frame
 
 
 def matched_patterns(race: pd.DataFrame, validated: list[dict[str, Any]]) -> list[str]:
@@ -88,7 +115,9 @@ def matched_patterns(race: pd.DataFrame, validated: list[dict[str, Any]]) -> lis
     return out
 
 
-def predict_race(engine: Engine, race_id: int) -> RacePrediction:
+def predict_race(engine: Engine, race_id: int, frame: pd.DataFrame | None = None,
+                 models: dict[str, LoadedFamily] | None = None) -> RacePrediction:
+    """`frame` et `models` peuvent être fournis déjà construits (cache de l'interface)."""
     status, _checks = _quality_status(engine, race_id)
     if status in (DataStatus.INSUFFICIENT.value, DataStatus.UNAVAILABLE.value):
         return RacePrediction(race_id, status, "Données insuffisantes : aucune prédiction.")
@@ -96,7 +125,7 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
         race_date = conn.execute(select(db.races.c.race_date)
                                  .where(db.races.c.race_id == race_id)).scalar_one()
     try:
-        models = _load_models(engine)
+        models = models if models is not None else load_models(engine)
     except (OSError, ValueError) as exc:
         return RacePrediction(race_id, DataStatus.UNAVAILABLE.value,
                               f"Échec du chargement des modèles : {exc}")
@@ -105,8 +134,8 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
                               "Aucun modèle entraîné : lancez scripts/train_models.py.")
 
     validated = validated_patterns(engine)
-    use_agg = all(bool(p.get("use_source_aggregates", True)) for _, p in models.values())
-    frame = build_dataset(load_raw(engine, until=race_date), use_source_aggregates=use_agg).frame
+    if frame is None:
+        frame = build_frame(engine, race_date, models_use_source_aggregates(models))
     race = frame[frame["race_id"] == race_id].copy()
     if len(race) < 2:
         return RacePrediction(race_id, DataStatus.INSUFFICIENT.value,
@@ -116,16 +145,17 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
     probs: dict[str, np.ndarray] = {}
     lgbm: dict[str, LgbmRaceModel] = {}
     meta_out: dict[str, dict[str, Any]] = {}
-    for family, (meta, payload) in models.items():
+    for family, loaded in models.items():
+        meta = loaded.meta
         meta_out[family] = {"version": meta["version"], "status": meta["status"],
-                            "train_end": meta["train_end"]}
-        if family == "market_calibrated":
+                            "train_end": meta["train_end"], "model_id": meta["model_id"]}
+        if loaded.calibrator is not None:
             if has_market:
-                cl = ConditionalLogit.from_dict(payload["calibrator"])
-                probs[family] = cl.predict_proba(race[["mkt_log_prob"]], race["race_id"])
+                probs[family] = loaded.calibrator.predict_proba(race[["mkt_log_prob"]],
+                                                                race["race_id"])
             continue
-        m = LgbmRaceModel.from_dict(payload)
-        if m.with_market and not has_market:
+        m = loaded.lgbm
+        if m is None or (m.with_market and not has_market):
             continue
         lgbm[family] = m
         probs[family] = m.predict(race)
@@ -149,8 +179,8 @@ def predict_race(engine: Engine, race_id: int) -> RacePrediction:
                                                else []))
     table["disagreement"] = stack.max(axis=0) - stack.min(axis=0)
     # --- incertitude : ensemble bootstrap, hors distribution, statut de course
-    payload = models[primary][1]
-    members = [LgbmRaceModel.from_dict(d) for d in payload.get("members", [])]
+    payload = models[primary].payload
+    members = models[primary].members
     if members:
         lo, hi = member_intervals(members, race)
     else:

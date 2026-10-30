@@ -25,6 +25,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -340,6 +341,7 @@ prediction_entries = Table(
     Column("p_win", Float), Column("p_place", Float),
     Column("p_win_lo", Float), Column("p_win_hi", Float),
     Column("rank", Integer), Column("model_disagreement", Float), Column("ood_score", Float),
+    Column("mkt_prob", Float), Column("mkt_odds", Float),
 )
 
 prediction_explanations = Table(
@@ -378,6 +380,17 @@ research_documents = Table(
     Column("content_sha256", String(64)),
     Column("summary", Text),
     Column("structured_json", JSON),
+)
+
+
+stored_files = Table(
+    "stored_files", metadata,
+    Column("key", String(300), primary_key=True),
+    Column("content", LargeBinary, nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("content_type", String(80), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
 )
 
 

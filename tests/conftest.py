@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ import pytest
 
 from horse_intelligence.config.settings import Settings, load_sources
 from horse_intelligence.data.collectors.base import RawResponse
-from horse_intelligence.data.storage.database import init_db, make_engine
+from horse_intelligence.data.storage.database import init_db, make_engine, metadata
 from horse_intelligence.data.storage.raw_store import RawStore
 from horse_intelligence.data.storage.repositories import Repository
 
@@ -76,15 +77,21 @@ def make_raw(endpoint: str, payload: Any, fetched_at: datetime, url: str = "") -
                        body=json.dumps(payload).encode())
 
 
+# HI_TEST_DATABASE_URL=postgresql+psycopg://… : rejoue toute la suite sur PostgreSQL
+TEST_DB_URL = os.environ.get("HI_TEST_DATABASE_URL")
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path, database_url=f"sqlite:///{tmp_path / 'test.db'}",
-                    sources=load_sources())
+    url = TEST_DB_URL or f"sqlite:///{tmp_path / 'test.db'}"
+    return Settings(data_dir=tmp_path, database_url=url, sources=load_sources())
 
 
 @pytest.fixture
 def repo(settings: Settings) -> Repository:
     engine = make_engine(settings.database_url)
+    if TEST_DB_URL:
+        metadata.drop_all(engine)  # base de test dédiée, remise à zéro à chaque test
     init_db(engine)
     r = Repository(engine, RawStore(settings.raw_dir))
     r.sync_sources(settings)

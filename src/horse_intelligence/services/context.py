@@ -22,7 +22,8 @@ class AppContext:
 def build_context(settings: Settings | None = None) -> AppContext:
     settings = settings or get_settings()
     engine = make_engine(settings.database_url)
-    init_db(engine)
     repo = Repository(engine, RawStore(settings.raw_dir))
-    repo.sync_sources(settings)
+    if not settings.read_only:  # en lecture seule, le schéma est créé par les tâches planifiées
+        init_db(engine)
+        repo.sync_sources(settings)
     return AppContext(settings, repo, build_collectors(settings))

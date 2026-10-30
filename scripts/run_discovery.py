@@ -20,7 +20,7 @@ def main() -> int:
     configure_logging()
     ctx = build_context()
     try:
-        rep = run_lab(ctx.repo.engine, ctx.settings.reports_dir, args.confirm_share)
+        rep = run_lab(ctx.repo.engine, args.confirm_share)
     except ValueError as exc:
         print(f"Laboratoire impossible : {exc}", file=sys.stderr)
         return 2

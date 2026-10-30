@@ -26,7 +26,7 @@ def main() -> int:
     configure_logging()
     ctx = build_context()
     try:
-        rep = run_validation(ctx.repo.engine, ctx.settings.reports_dir)
+        rep = run_validation(ctx.repo.engine)
     except ValueError as exc:
         print(f"Validation impossible : {exc}", file=sys.stderr)
         return 2

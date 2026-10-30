@@ -55,18 +55,11 @@ class Settings:
     database_url: str
     sources: dict[str, SourceConfig]
     user_agent: str = "horse-intelligence/0.1 (usage personnel; analyse)"
+    read_only: bool = False  # application en ligne : aucune écriture en base
 
     @property
     def raw_dir(self) -> Path:
         return self.data_dir / "raw"
-
-    @property
-    def models_dir(self) -> Path:
-        return self.data_dir / "artifacts" / "models"
-
-    @property
-    def reports_dir(self) -> Path:
-        return self.data_dir / "artifacts" / "reports"
 
     @property
     def using_default_database(self) -> bool:
@@ -97,7 +90,9 @@ def load_sources(path: Path | None = None) -> dict[str, SourceConfig]:
 def build_settings() -> Settings:
     data_dir = Path(_secret("HI_DATA_DIR") or PROJECT_ROOT / "data_store")
     database_url = _secret("DATABASE_URL") or f"sqlite:///{data_dir / 'horse_intelligence.db'}"
-    return Settings(data_dir=data_dir, database_url=database_url, sources=load_sources())
+    read_only = (_secret("HI_READ_ONLY") or "").strip().lower() in ("1", "true", "oui", "yes")
+    return Settings(data_dir=data_dir, database_url=database_url, sources=load_sources(),
+                    read_only=read_only)
 
 
 @lru_cache(maxsize=1)
