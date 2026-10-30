@@ -10,7 +10,8 @@ sources:
     kind: primary
     enabled: true
     free: true
-    status_audit: unverified
+    status_audit: verified       # contrat confronté aux vraies réponses le 2026-10-30
+    pools: ["OFFLINE", "INTERNET"]  # masses de paris collectées (cotes distinctes)
     min_interval_s: 1.0        # au plus 1 requête / seconde
     timeout_s: 15
     max_retries: 3

@@ -50,6 +50,7 @@ def test_entry_normalization() -> None:
     assert e.horse_canonical == "ECLAIR DE TEST"
     assert e.birth_year == 2021 and e.rider_name == "D. Pilote1"
     assert e.weight_kg is None  # absent en trot : jamais inventé
+    assert e.career_earnings == 85000.0  # centimes → euros
     assert not _snapshot().entries[3].is_runner
 
 
@@ -104,3 +105,23 @@ def test_dead_heat_is_warning_only() -> None:
     report = validate_snapshot(snap)
     assert "dead_heat" in {c.code for c in report.checks}
     assert report.status is DataStatus.PARTIAL
+
+
+def test_results_units_and_non_runners() -> None:
+    snap = _snapshot()
+    assert {r.num_pmu for r in snap.results} == {1, 2, 3}  # non-partant exclu
+    winner = next(r for r in snap.results if r.finish_position == 1)
+    assert winner.time_s == 207.57 and winner.reduction_km_s == 72.6
+
+
+def test_weight_units() -> None:
+    from horse_intelligence.data.processors.normalization import entry_from_pmu
+    from horse_intelligence.data.schemas.pmu import PmuParticipant
+
+    p = PmuParticipant.model_validate({"numPmu": 1, "nom": "X", "handicapPoids": 720,
+                                       "poidsConditionMonte": 680})
+    e = entry_from_pmu(p, RACE_DAY)
+    assert (e.weight_kg, e.weight_carried_kg) == (72.0, 68.0)
+    p0 = PmuParticipant.model_validate({"numPmu": 1, "nom": "X", "handicapPoids": 580,
+                                        "poidsConditionMonte": 0})
+    assert entry_from_pmu(p0, RACE_DAY).weight_carried_kg == 58.0

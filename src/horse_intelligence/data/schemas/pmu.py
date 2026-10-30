@@ -1,9 +1,9 @@
 """Contrats des réponses brutes de l'API PMU turfinfo.
 
-ATTENTION : l'API n'est pas documentée publiquement. Les noms de champs ci-dessous
-sont ceux attendus d'après la connaissance publique du service ; ils n'ont PAS encore
-été confirmés contre la vraie API (hôte bloqué lors de l'audit). Les tests marqués
-`network` (tests/test_collectors.py) valident ce contrat dès que l'accès est ouvert.
+L'API n'est pas documentée publiquement. Ce contrat a été confronté aux vraies
+réponses le 2026-10-30 (programme, participants et rapports du 29/10/2026, trot
+attelé, trot monté, obstacle et plat). Les tests marqués `network`
+(tests/test_collectors.py) le revalident à la demande.
 
 Les modèles sont tolérants (`extra="ignore"`) : un champ inconnu n'est pas une erreur,
 mais un champ structurant manquant l'est (ContractError côté connecteur).
@@ -70,6 +70,7 @@ class PmuProgramme(_Tolerant):
 
 
 class PmuRapportCote(_Tolerant):
+    type_pari: str | None = Field(default=None, alias="typePari")
     rapport: float | None = None
     type_rapport: str | None = Field(default=None, alias="typeRapport")
     date_rapport: int | None = Field(default=None, alias="dateRapport")  # epoch ms
@@ -97,6 +98,7 @@ class PmuParticipant(_Tolerant):
     nombre_places: int | None = Field(default=None, alias="nombrePlaces")
     gains_participant: PmuGains | None = Field(default=None, alias="gainsParticipant")
     handicap_poids: float | None = Field(default=None, alias="handicapPoids")
+    poids_condition_monte: float | None = Field(default=None, alias="poidsConditionMonte")
     handicap_distance: int | None = Field(default=None, alias="handicapDistance")
     oeilleres: str | None = None
     deferre: str | None = None

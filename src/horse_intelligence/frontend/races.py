@@ -47,24 +47,29 @@ def _race_detail(row: pd.Series) -> None:
     now = datetime.now(UTC)
     odds = repo.odds_as_of(race_id, now, kinds=("reference", "live"))
     table = entries[["num_pmu", "horse", "rider", "trainer", "age", "sex", "draw",
-                     "weight_kg", "status", "form_string", "observed_at"]].copy()
-    for kind, col in (("reference", "cote_ref"), ("live", "cote_avant_depart")):
-        sub = odds[odds["odds_kind"] == kind][["num_pmu", "odds"]] if not odds.empty else None
-        if sub is not None and not sub.empty:
-            table = table.merge(sub.rename(columns={"odds": col}), on="num_pmu", how="left")
+                     "weight_carried_kg", "status", "form_string", "observed_at"]].copy()
+    odds_cols: dict[str, str] = {}
+    if not odds.empty:
+        odds = odds[odds["bet_type"] == "SIMPLE_GAGNANT"]
+        for (kind, pool), sub in odds.groupby(["odds_kind", "pool"]):
+            col = f"{kind}_{pool}"
+            odds_cols[col] = (f"Cote {'réf.' if kind == 'reference' else 'avant départ'} "
+                              f"({'Internet' if pool == 'INTERNET' else 'points de vente'})")
+            table = table.merge(sub[["num_pmu", "odds"]].rename(columns={"odds": col}),
+                                on="num_pmu", how="left")
     if bool(row["result_final"]):
         res = repo.results_for(race_id)
         if not res.empty:
             table = table.merge(res[["num_pmu", "finish_position"]], on="num_pmu", how="left")
     st.dataframe(table, hide_index=True, width="stretch", column_config={
         "num_pmu": "N°", "horse": "Cheval", "rider": "Jockey / driver", "trainer": "Entraîneur",
-        "age": "Âge", "sex": "Sexe", "draw": "Corde", "weight_kg": "Poids (kg)",
+        "age": "Âge", "sex": "Sexe", "draw": "Corde", "weight_carried_kg": "Poids porté (kg)",
         "status": "Statut", "form_string": "Musique (source)", "observed_at": "Observé le",
-        "cote_ref": "Cote réf.", "cote_avant_depart": "Cote avant départ",
-        "finish_position": "Arrivée"})
-    st.caption("Les cotes relevées après le départ sont exclues de cet affichage et de toute "
-               "analyse prédictive. La musique est celle publiée par la source au moment de "
-               "l'observation.")
+        "finish_position": "Arrivée", **odds_cols})
+    st.caption("Cotes simple gagnant. Les cotes relevées après le départ sont exclues de cet "
+               "affichage et de toute analyse prédictive ; la cote de référence est datée de sa "
+               "publication (environ 20 à 30 min avant le départ). La musique est celle publiée "
+               "par la source au moment de l'observation.")
 
 
 def render() -> None:

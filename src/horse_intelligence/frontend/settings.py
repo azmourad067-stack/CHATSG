@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from horse_intelligence.data.collectors.registry import check_all
-from horse_intelligence.data.processors.normalization import PMU_UNIT_ASSUMPTIONS
+from horse_intelligence.data.processors.normalization import PMU_UNITS
 from horse_intelligence.frontend.components.cards import notice
 from horse_intelligence.frontend.state import get_context
 from horse_intelligence.monitoring.logging_config import redact
@@ -39,6 +39,6 @@ def render() -> None:
     st.subheader("Stockage")
     st.code(redact(ctx.settings.database_url), language=None)
 
-    st.subheader("Hypothèses d'unités PMU (non vérifiées)")
-    st.dataframe(pd.DataFrame(list(PMU_UNIT_ASSUMPTIONS.items()), columns=["Champ", "Hypothèse"]),
+    st.subheader("Unités des champs PMU (vérifiées le 30/10/2026)")
+    st.dataframe(pd.DataFrame(list(PMU_UNITS.items()), columns=["Champ", "Unité"]),
                  hide_index=True, width="stretch")

@@ -49,6 +49,7 @@ class EntryRecord:
     owner_name: str | None
     draw: int | None
     weight_kg: float | None
+    weight_carried_kg: float | None
     handicap_distance_m: int | None
     blinkers: str | None
     shoes: str | None
@@ -69,8 +70,8 @@ class ResultRecord:
     num_pmu: int
     finish_position: int | None
     incident: str | None
-    time_raw: int | None
-    reduction_km_raw: int | None
+    time_s: float | None
+    reduction_km_s: float | None
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,8 @@ class OddsRecord:
     odds_kind: str
     odds: float
     published_at: datetime | None
+    pool: str = "OFFLINE"            # masse de paris : OFFLINE (points de vente) | INTERNET
+    payload_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,8 @@ class PayoutRecord:
     bet_type: str
     combination: str | None
     payout_per_eur: float | None
+    pool: str = "OFFLINE"
+    payload_id: int | None = None
 
 
 @dataclass

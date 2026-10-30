@@ -23,6 +23,7 @@ from horse_intelligence.data.storage.raw_store import RawStore
 
 _ENTRY_HASH_FIELDS = (
     "horse_canonical", "rider_name", "trainer_name", "owner_name", "draw", "weight_kg",
+    "weight_carried_kg",
     "handicap_distance_m", "blinkers", "shoes", "status", "form_string", "career_starts",
     "career_wins", "career_places", "career_earnings",
 )
@@ -152,8 +153,7 @@ class Repository:
             return race_id
 
     # ---------------------------------------------------------------- instantanés
-    def save_snapshot(self, race_id: int, snap: RaceSnapshot, payload_id: int | None,
-                      payouts_payload_id: int | None = None) -> None:
+    def save_snapshot(self, race_id: int, snap: RaceSnapshot, payload_id: int | None) -> None:
         after = snap.observed_after_start
         with self.engine.begin() as conn:
             horse_ids: dict[int, int] = {}
@@ -177,6 +177,7 @@ class Repository:
                     trainer_id=self._person(conn, db.trainers, "trainer_id", e.trainer_name),
                     owner_id=self._person(conn, db.owners, "owner_id", e.owner_name),
                     age=e.age, sex=e.sex, draw=e.draw, weight_kg=e.weight_kg,
+                    weight_carried_kg=e.weight_carried_kg,
                     handicap_distance_m=e.handicap_distance_m, blinkers=e.blinkers,
                     shoes=e.shoes, status=e.status, form_string=e.form_string,
                     career_starts=e.career_starts, career_wins=e.career_wins,
@@ -193,7 +194,7 @@ class Repository:
                         db.race_results.c.num_pmu == r.num_pmu))).first()
                     values = {"horse_id": horse_ids[r.num_pmu],
                               "finish_position": r.finish_position, "incident": r.incident,
-                              "time_raw": r.time_raw, "reduction_km_raw": r.reduction_km_raw,
+                              "time_s": r.time_s, "reduction_km_s": r.reduction_km_s,
                               "observed_at": snap.observed_at, "payload_id": payload_id}
                     if exists:
                         conn.execute(update(db.race_results)
@@ -208,25 +209,28 @@ class Repository:
                     select(db.odds_snapshots.c.odds, db.odds_snapshots.c.published_at)
                     .where(and_(db.odds_snapshots.c.race_id == race_id,
                                 db.odds_snapshots.c.num_pmu == o.num_pmu,
+                                db.odds_snapshots.c.pool == o.pool,
+                                db.odds_snapshots.c.bet_type == o.bet_type,
                                 db.odds_snapshots.c.odds_kind == o.odds_kind))
                     .order_by(db.odds_snapshots.c.observed_at.desc()).limit(1)).first()
                 if last_odds and last_odds.odds == o.odds \
                         and last_odds.published_at == o.published_at:
                     continue
                 conn.execute(insert(db.odds_snapshots).values(
-                    race_id=race_id, num_pmu=o.num_pmu, bet_type=o.bet_type,
+                    race_id=race_id, num_pmu=o.num_pmu, bet_type=o.bet_type, pool=o.pool,
                     odds_kind=o.odds_kind, odds=o.odds, published_at=o.published_at,
-                    observed_at=snap.observed_at, payload_id=payload_id))
+                    observed_at=snap.observed_at, payload_id=o.payload_id or payload_id))
 
             for p in snap.payouts:
                 exists = conn.execute(select(db.payouts.c.payout_id).where(and_(
-                    db.payouts.c.race_id == race_id, db.payouts.c.bet_type == p.bet_type,
+                    db.payouts.c.race_id == race_id, db.payouts.c.pool == p.pool,
+                    db.payouts.c.bet_type == p.bet_type,
                     db.payouts.c.combination == p.combination))).first()
                 if not exists:
                     conn.execute(insert(db.payouts).values(
-                        race_id=race_id, bet_type=p.bet_type, combination=p.combination,
-                        payout_per_eur=p.payout_per_eur, observed_at=snap.observed_at,
-                        payload_id=payouts_payload_id))
+                        race_id=race_id, pool=p.pool, bet_type=p.bet_type,
+                        combination=p.combination, payout_per_eur=p.payout_per_eur,
+                        observed_at=snap.observed_at, payload_id=p.payload_id))
 
     def save_quality_report(self, report: QualityReport, scope: str = "race") -> None:
         with self.engine.begin() as conn:
@@ -314,16 +318,36 @@ class Repository:
         return df.sort_values("num_pmu").reset_index(drop=True)
 
     def odds_as_of(self, race_id: int, as_of: datetime,
-                   kinds: Sequence[str] = ("reference", "live")) -> pd.DataFrame:
-        """Cotes réellement connues à `as_of`. Les cotes `post_start` sont exclues."""
+                   kinds: Sequence[str] = ("reference", "live"),
+                   pool: str | None = None) -> pd.DataFrame:
+        """Cotes réellement disponibles à `as_of`. Les cotes `post_start` sont toujours exclues.
+
+        Disponibilité (`available_at`) :
+        - `reference` : date de publication fournie par la source, si elle précède le
+          départ (vérifié le 2026-10-30 : publiée ~20 à 30 min avant). Une cote de
+          référence récupérée a posteriori reste ainsi utilisable pour un backtest ;
+        - sinon : moment de NOTRE observation.
+        """
         o = db.odds_snapshots
         kinds = [k for k in kinds if k != "post_start"]
-        df = self._df(select(o).where(and_(o.c.race_id == race_id, o.c.observed_at <= as_of,
-                                           o.c.odds_kind.in_(kinds))))
+        with self.engine.connect() as conn:
+            start = conn.execute(select(db.races.c.scheduled_start_utc)
+                                 .where(db.races.c.race_id == race_id)).scalar()
+        cond = and_(o.c.race_id == race_id, o.c.odds_kind.in_(kinds))
+        if pool is not None:
+            cond = and_(cond, o.c.pool == pool)
+        df = self._df(select(o).where(cond))
         if df.empty:
             return df
-        return (df.sort_values("observed_at")
-                .drop_duplicates(["num_pmu", "odds_kind"], keep="last")
+        df["available_at"] = [
+            pub if kind == "reference" and pub is not None and start is not None and pub < start
+            else obs
+            for kind, pub, obs in zip(df["odds_kind"], df["published_at"], df["observed_at"],
+                                      strict=True)
+        ]
+        df = df[df["available_at"] <= as_of]
+        return (df.sort_values("available_at")
+                .drop_duplicates(["num_pmu", "pool", "bet_type", "odds_kind"], keep="last")
                 .reset_index(drop=True))
 
     def results_for(self, race_id: int) -> pd.DataFrame:

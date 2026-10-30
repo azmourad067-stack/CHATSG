@@ -180,7 +180,8 @@ race_entries = Table(
     Column("age", Integer),
     Column("sex", String(20)),
     Column("draw", Integer),
-    Column("weight_kg", Float),
+    Column("weight_kg", Float),           # poids du handicap / des conditions
+    Column("weight_carried_kg", Float),   # poids réellement porté (après décharge)
     Column("handicap_distance_m", Integer),
     Column("blinkers", String(40)),
     Column("shoes", String(60)),
@@ -208,8 +209,8 @@ race_results = Table(
     Column("horse_id", ForeignKey("horses.horse_id"), nullable=False),
     Column("finish_position", Integer),  # NULL = non classé / disqualifié / non-partant
     Column("incident", String(60)),
-    Column("time_raw", Integer),           # valeur brute source (unité à confirmer)
-    Column("reduction_km_raw", Integer),   # valeur brute source (unité à confirmer)
+    Column("time_s", Float),
+    Column("reduction_km_s", Float),       # trot : temps au kilomètre
     Column("observed_at", UTCDateTime, nullable=False),
     Column("payload_id", ForeignKey("raw_payloads.payload_id")),
     UniqueConstraint("race_id", "num_pmu", name="uq_result"),
@@ -222,6 +223,7 @@ odds_snapshots = Table(
     Column("race_id", ForeignKey("races.race_id"), nullable=False),
     Column("num_pmu", Integer, nullable=False),
     Column("bet_type", String(40), nullable=False),
+    Column("pool", String(20), nullable=False),  # OFFLINE (points de vente) | INTERNET
     # reference : cote de référence publiée ; live : relevée AVANT le départ ;
     # post_start : relevée APRÈS le départ (≈ finale) → interdite pour la décision
     Column("odds_kind", String(20), nullable=False),
@@ -237,11 +239,12 @@ payouts = Table(
     Column("payout_id", Integer, primary_key=True, autoincrement=True),
     Column("race_id", ForeignKey("races.race_id"), nullable=False),
     Column("bet_type", String(60), nullable=False),
+    Column("pool", String(20), nullable=False),
     Column("combination", String(100)),
     Column("payout_per_eur", Float),
     Column("observed_at", UTCDateTime, nullable=False),
     Column("payload_id", ForeignKey("raw_payloads.payload_id")),
-    UniqueConstraint("race_id", "bet_type", "combination", name="uq_payout"),
+    UniqueConstraint("race_id", "pool", "bet_type", "combination", name="uq_payout"),
 )
 
 weather_conditions = Table(

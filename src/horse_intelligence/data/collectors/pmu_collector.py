@@ -1,9 +1,13 @@
 """Connecteur PMU turfinfo (source primaire).
 
-Endpoints utilisés (format attendu, à confirmer — voir data/schemas/pmu.py) :
+Endpoints (contrat vérifié le 2026-10-30, voir data/schemas/pmu.py) :
   /programme/{JJMMAAAA}
-  /programme/{JJMMAAAA}/R{r}/C{c}/participants
-  /programme/{JJMMAAAA}/R{r}/C{c}/rapports-definitifs
+  /programme/{JJMMAAAA}/R{r}/C{c}/participants[?specialisation=INTERNET]
+  /programme/{JJMMAAAA}/R{r}/C{c}/rapports-definitifs[?specialisation=INTERNET]
+
+Le PMU tient deux masses de paris aux cotes distinctes : OFFLINE (points de vente,
+réponse par défaut) et INTERNET. Les courses étrangères n'existent souvent que sur
+la masse INTERNET.
 """
 
 from __future__ import annotations
@@ -27,6 +31,13 @@ from horse_intelligence.data.schemas.pmu import (
 )
 
 _RAPPORTS = TypeAdapter(list[PmuRapportPari])
+POOLS = ("OFFLINE", "INTERNET")
+
+
+def _pool_params(pool: str) -> dict[str, str]:
+    if pool not in POOLS:
+        raise ValueError(f"masse de paris inconnue : {pool}")
+    return {"specialisation": "INTERNET"} if pool == "INTERNET" else {}
 
 
 def pmu_date(day: date) -> str:
@@ -50,13 +61,20 @@ class PmuCollector(BaseCollector):
     def fetch_programme_raw(self, day: date) -> RawResponse:
         return self._fetch("programme", self._url(f"programme/{pmu_date(day)}"))
 
-    def fetch_participants_raw(self, day: date, reunion: int, course: int) -> RawResponse:
-        path = f"programme/{pmu_date(day)}/R{reunion}/C{course}/participants"
-        return self._fetch("participants", self._url(path))
+    @property
+    def pools(self) -> tuple[str, ...]:
+        configured = self.config.extra.get("pools") or POOLS
+        return tuple(p for p in configured if p in POOLS)
 
-    def fetch_rapports_raw(self, day: date, reunion: int, course: int) -> RawResponse:
+    def fetch_participants_raw(self, day: date, reunion: int, course: int,
+                               pool: str = "OFFLINE") -> RawResponse:
+        path = f"programme/{pmu_date(day)}/R{reunion}/C{course}/participants"
+        return self._fetch("participants", self._url(path), _pool_params(pool))
+
+    def fetch_rapports_raw(self, day: date, reunion: int, course: int,
+                           pool: str = "OFFLINE") -> RawResponse:
         path = f"programme/{pmu_date(day)}/R{reunion}/C{course}/rapports-definitifs"
-        return self._fetch("rapports-definitifs", self._url(path))
+        return self._fetch("rapports-definitifs", self._url(path), _pool_params(pool))
 
     # --- décodage selon contrat ---------------------------------------------
     @staticmethod

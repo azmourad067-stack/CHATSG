@@ -28,17 +28,28 @@ from horse_intelligence.data.schemas.pmu import (
     PmuReunion,
 )
 
-# Hypothèses d'unités NON VÉRIFIÉES (API non documentée). Les contrôles qualité
-# (validation.py) signalent toute valeur hors plage plausible, ce qui révélera
-# une hypothèse fausse dès les premières collectes réelles.
-PMU_UNIT_ASSUMPTIONS = {
-    "handicapPoids": "hectogrammes (560 → 56,0 kg)",
-    "heureDepart": "epoch en millisecondes (UTC)",
-    "dateRapport": "epoch en millisecondes (UTC)",
-    "tempsObtenu": "conservé brut (unité non confirmée)",
-    "reductionKilometrique": "conservé brut (unité non confirmée)",
+# Unités confirmées contre les vraies réponses le 2026-10-30. Les contrôles qualité
+# (validation.py) signalent toute valeur hors plage plausible en cas de changement.
+PMU_UNITS = {
+    "handicapPoids / poidsConditionMonte": "hectogrammes (580 → 58,0 kg)",
+    "heureDepart / dateRapport": "epoch en millisecondes (UTC)",
+    "tempsObtenu / reductionKilometrique": "millisecondes (72500 → 1'12\"5)",
+    "gainsCarriere / dividendePourUnEuro": "centimes d'euro (620 → 6,20 €)",
+    "montantPrix": "euros",
+    "dernierRapportReference": "cote publiée ~20 à 30 min avant le départ (horodatée)",
+    "dernierRapportDirect": "dernière cote ; après la course = cote finale",
 }
-WEIGHT_DIVISOR = 10.0
+HECTOGRAMS_PER_KG = 10.0
+CENTS_PER_EURO = 100.0
+MS_PER_S = 1000.0
+
+
+def _ms_to_s(value: int | None) -> float | None:
+    return value / MS_PER_S if value else None
+
+
+def _hg_to_kg(value: float | None) -> float | None:
+    return value / HECTOGRAMS_PER_KG if value else None
 
 _DISCIPLINES = {
     "TROT_ATTELE": "trot_attele",
@@ -120,7 +131,8 @@ def entry_from_pmu(p: PmuParticipant, race_date: date) -> EntryRecord:
         trainer_name=clean_text(p.entraineur),
         owner_name=clean_text(p.proprietaire),
         draw=p.place_corde,
-        weight_kg=(p.handicap_poids / WEIGHT_DIVISOR) if p.handicap_poids else None,
+        weight_kg=_hg_to_kg(p.handicap_poids),
+        weight_carried_kg=_hg_to_kg(p.poids_condition_monte) or _hg_to_kg(p.handicap_poids),
         handicap_distance_m=p.handicap_distance,
         blinkers=p.oeilleres,
         shoes=p.deferre,
@@ -129,38 +141,48 @@ def entry_from_pmu(p: PmuParticipant, race_date: date) -> EntryRecord:
         career_starts=p.nombre_courses,
         career_wins=p.nombre_victoires,
         career_places=p.nombre_places,
-        career_earnings=p.gains_participant.gains_carriere if p.gains_participant else None,
+        career_earnings=(p.gains_participant.gains_carriere / CENTS_PER_EURO
+                         if p.gains_participant and p.gains_participant.gains_carriere is not None
+                         else None),
     )
 
 
-def odds_from_pmu(p: PmuParticipant, observed_after_start: bool) -> list[OddsRecord]:
+def odds_from_pmu(p: PmuParticipant, observed_after_start: bool, pool: str = "OFFLINE",
+                  payload_id: int | None = None) -> list[OddsRecord]:
     out: list[OddsRecord] = []
     ref = p.dernier_rapport_reference
     if ref is not None and ref.rapport:
-        out.append(OddsRecord(p.num_pmu, "SIMPLE_GAGNANT", "reference", ref.rapport,
-                              epoch_ms_to_utc(ref.date_rapport)))
+        out.append(OddsRecord(p.num_pmu, ref.type_pari or "SIMPLE_GAGNANT", "reference",
+                              ref.rapport, epoch_ms_to_utc(ref.date_rapport), pool, payload_id))
     direct = p.dernier_rapport_direct
     if direct is not None and direct.rapport:
         kind = "post_start" if observed_after_start else "live"
-        out.append(OddsRecord(p.num_pmu, "SIMPLE_GAGNANT", kind, direct.rapport,
-                              epoch_ms_to_utc(direct.date_rapport)))
+        out.append(OddsRecord(p.num_pmu, direct.type_pari or "SIMPLE_GAGNANT", kind,
+                              direct.rapport, epoch_ms_to_utc(direct.date_rapport), pool,
+                              payload_id))
     return out
 
 
 def result_from_pmu(p: PmuParticipant) -> ResultRecord | None:
+    if (p.statut or "").upper() == "NON_PARTANT":
+        return None
     if p.ordre_arrivee is None and p.incident is None:
         return None
     return ResultRecord(
         num_pmu=p.num_pmu,
         finish_position=p.ordre_arrivee if (p.ordre_arrivee or 0) > 0 else None,
         incident=p.incident,
-        time_raw=p.temps_obtenu,
-        reduction_km_raw=p.reduction_kilometrique,
+        time_s=_ms_to_s(p.temps_obtenu),
+        reduction_km_s=_ms_to_s(p.reduction_kilometrique),
     )
 
 
-def payouts_from_pmu(rapports: list[PmuRapportPari]) -> list[PayoutRecord]:
+def payouts_from_pmu(rapports: list[PmuRapportPari], pool: str = "OFFLINE",
+                     payload_id: int | None = None) -> list[PayoutRecord]:
     return [
-        PayoutRecord(r.type_pari, clean_text(line.combinaison), line.dividende_pour_un_euro)
+        PayoutRecord(r.type_pari, clean_text(line.combinaison),
+                     line.dividende_pour_un_euro / CENTS_PER_EURO
+                     if line.dividende_pour_un_euro is not None else None,
+                     pool, payload_id)
         for r in rapports for line in r.rapports
     ]

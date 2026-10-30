@@ -45,15 +45,21 @@ def participants_payload(with_results: bool = True) -> dict[str, Any]:
             "statut": statut, "driver": f"D. Pilote{num}", "entraineur": f"E. Coach{num}",
             "proprietaire": "Écurie Test", "musique": "1a3aDa", "nombreCourses": 20,
             "nombreVictoires": 3, "nombrePlaces": 8,
-            "gainsParticipant": {"gainsCarriere": 85000}, "handicapDistance": 2700,
+            "gainsParticipant": {"gainsCarriere": 8500000}, "handicapDistance": 2700,
             "deferre": "DEFERRE_ANTERIEURS_POSTERIEURS",
-            "dernierRapportReference": {"rapport": ref, "typeRapport": "REFERENCE",
-                                        "dateRapport": START_MS - 6 * 3_600_000},
-            "dernierRapportDirect": {"rapport": direct, "typeRapport": "DIRECT",
-                                     "dateRapport": START_MS - 60_000},
+            "dernierRapportReference": {"typePari": "SIMPLE_GAGNANT", "rapport": ref,
+                                        "typeRapport": "REFERENCE",
+                                        "dateRapport": START_MS - 30 * 60_000},
+            "dernierRapportDirect": {"typePari": "SIMPLE_GAGNANT", "rapport": direct,
+                                     "typeRapport": "DIRECT",
+                                     "dateRapport": START_MS + 60_000},
         }
         if with_results and place is not None:
             d["ordreArrivee"] = place
+            d["tempsObtenu"] = 206570 + 1000 * place
+            d["reductionKilometrique"] = 72500 + 100 * place
+        if statut == "NON_PARTANT":
+            d["incident"] = "NON_PARTANT"
         return d
 
     return {"participants": [

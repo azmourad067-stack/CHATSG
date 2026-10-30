@@ -55,32 +55,56 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
     for _reunion, race in races_from_programme(day, programme):
         report.races_seen += 1
         race_id = repo.upsert_race(race, raw_prog.fetched_at, pmu.key, prog_payload)
-        try:
-            raw_part = pmu.fetch_participants_raw(day, race.reunion_num, race.course_num)
-            part_payload = repo.store_raw(raw_part)
-            participants = pmu.parse_participants(raw_part).participants
-        except CollectorError as exc:
-            report.errors.append({"scope": race.key, "message": str(exc)})
+        # Partants : une réponse par masse de paris. La première réponse obtenue fournit
+        # les partants et les résultats ; chaque masse fournit ses propres cotes.
+        snap: RaceSnapshot | None = None
+        main_payload: int | None = None
+        failures: list[str] = []
+        for pool in pmu.pools:
+            try:
+                raw_part = pmu.fetch_participants_raw(day, race.reunion_num, race.course_num,
+                                                      pool)
+                payload = repo.store_raw(raw_part)
+                participants = pmu.parse_participants(raw_part).participants
+            except NotFoundError:
+                continue
+            except CollectorError as exc:
+                failures.append(f"{pool}: {exc}")
+                continue
+            if snap is None:
+                snap = RaceSnapshot(race=race, observed_at=raw_part.fetched_at)
+                main_payload = payload
+                snap.entries = [entry_from_pmu(p, day) for p in participants]
+                if snap.observed_after_start:
+                    snap.results = [r for p in participants
+                                    if (r := result_from_pmu(p)) is not None]
+            after = race.scheduled_start_utc is not None \
+                and raw_part.fetched_at >= race.scheduled_start_utc
+            snap.odds += [o for p in participants
+                          for o in odds_from_pmu(p, after, pool, payload)]
+        report.errors += [{"scope": race.key, "message": f} for f in failures]
+        if snap is None:
+            if not failures:
+                report.errors.append({"scope": race.key, "message": "partants absents"})
             report.statuses[race.key] = DataStatus.UNAVAILABLE.value
             continue
 
-        snap = RaceSnapshot(race=race, observed_at=raw_part.fetched_at)
-        snap.entries = [entry_from_pmu(p, day) for p in participants]
-        snap.odds = [o for p in participants for o in odds_from_pmu(p, snap.observed_after_start)]
-        if snap.observed_after_start:
-            snap.results = [r for p in participants if (r := result_from_pmu(p)) is not None]
-
-        payouts_payload: int | None = None
         if fetch_payouts and race.result_final and snap.observed_after_start:
-            try:
-                raw_rap = pmu.fetch_rapports_raw(day, race.reunion_num, race.course_num)
-                payouts_payload = repo.store_raw(raw_rap)
-                snap.payouts = payouts_from_pmu(pmu.parse_rapports(raw_rap))
-            except CollectorError as exc:
-                report.errors.append({"scope": f"{race.key}/rapports", "message": str(exc)})
+            for pool in pmu.pools:
+                try:
+                    raw_rap = pmu.fetch_rapports_raw(day, race.reunion_num, race.course_num,
+                                                     pool)
+                    rap_payload = repo.store_raw(raw_rap)
+                    snap.payouts += payouts_from_pmu(pmu.parse_rapports(raw_rap), pool,
+                                                     rap_payload)
+                except NotFoundError:
+                    continue  # masse sans rapports pour cette course (fréquent à l'étranger)
+                except CollectorError as exc:
+                    report.errors.append({"scope": f"{race.key}/rapports/{pool}",
+                                          "message": str(exc)})
 
         quality = validate_snapshot(snap)
-        repo.save_snapshot(race_id, snap, part_payload, payouts_payload)
+        repo.save_snapshot(race_id, snap, main_payload)
         repo.save_quality_report(quality)
         report.statuses[race.key] = quality.status.value
         if quality.status is not DataStatus.INSUFFICIENT:

@@ -11,9 +11,9 @@ connexion à un compte opérateur, aucune garantie de gain.
 
 | Brique | État |
 |---|---|
-| Connecteur PMU turfinfo (programme, partants, rapports définitifs) | Implémenté, testé sur des réponses simulées. **Format réel non encore confirmé.** |
-| Connecteur Open-Meteo (prévisions/archive) | Implémenté, testé sur des réponses simulées. Non branché aux courses (coordonnées des hippodromes à renseigner). |
-| Open PMU API | Code audité ; connecteur limité au **recoupement des arrivées** (une course par jour, cotes non horodatées — voir audit §2.5) |
+| Connecteur PMU turfinfo (programme, partants, rapports, masses points de vente et Internet) | **Contrat vérifié contre l'API réelle le 30/10/2026** (voir audit §2.6) ; première journée réelle collectée |
+| Connecteur Open-Meteo (prévisions/archive) | Implémenté ; API joignable. Pas encore relié aux courses (coordonnées des hippodromes à renseigner) |
+| Open PMU API | Code audité ; connecteur limité au **recoupement des arrivées** (voir audit §2.5). L'hébergeur refuse actuellement l'accès depuis l'environnement de développement (403). |
 | Turf.bzh | **Non opérationnel** (payant) |
 | HTTP robuste | Délai d'attente, tentatives bornées avec attente exponentielle, débit limité, pas de redirection |
 | Base relationnelle | SQLite (local) ou PostgreSQL (`DATABASE_URL`), schéma complet y compris tables des phases suivantes |
@@ -21,7 +21,7 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
 | Interface Streamlit | Tableau de bord, Courses du jour, Fiche cheval, Configuration. Les pages Analyse, Laboratoire IA et Backtesting affichent explicitement leur indisponibilité. |
-| Tests | 58 tests (connecteurs, qualité, stockage, anti-fuite, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Tests | 61 tests (connecteurs, qualité, stockage, anti-fuite, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
 Aucune probabilité n'est affichée : aucun modèle n'est encore entraîné ni validé.
 
@@ -107,9 +107,7 @@ pytest -m network
 ```
 
 La seconde commande lance les tests de contrat contre la vraie API PMU (accès
-réseau requis). Elle confirmera ou corrigera les hypothèses de format et d'unités
-listées dans `src/horse_intelligence/data/schemas/pmu.py` et
-`src/horse_intelligence/data/processors/normalization.py`.
+réseau requis) pour détecter une évolution du format des réponses.
 
 ## Structure
 

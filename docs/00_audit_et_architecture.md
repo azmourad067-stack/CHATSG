@@ -114,6 +114,29 @@ est implémenté et testé sur des réponses simulées conformes au contrat publ
 (README et `types.ts`). Il reste à le valider contre l'API réelle.
 
 
+### 2.6. Vérification du contrat PMU contre l'API réelle (2026-10-30)
+
+Une fois l'accès réseau ouvert, le programme, les participants et les rapports
+du 29/10/2026 ont été comparés au contrat (52 courses, 7 réunions : France,
+Espagne, États-Unis, Chili ; trot attelé, trot monté, obstacle, plat).
+
+| Point | Résultat |
+|---|---|
+| Noms de champs | Conformes au contrat. `placeCorde` est absent au trot (normal). Champ supplémentaire utile : `poidsConditionMonte` (poids réellement porté après décharge). |
+| `handicapPoids`, `poidsConditionMonte` | Hectogrammes (580 → 58,0 kg) — **hypothèse confirmée** |
+| `heureDepart`, `dateRapport` | Epoch en millisecondes UTC — **confirmé** |
+| `tempsObtenu`, `reductionKilometrique` | Millisecondes (72500 → 1'12"5) — désormais convertis en secondes |
+| `gainsCarriere`, `dividendePourUnEuro` | **Centimes d'euro** (620 → 6,20 €). Le code les prenait pour des euros : **corrigé** |
+| `dernierRapportReference` | Publiée **20 à 32 min avant le départ**, avec son horodatage. Elle reste donc utilisable en backtest à sa date de publication, même récupérée après la course. |
+| `dernierRapportDirect` | Horodatée **après** le départ pour une course terminée (= cote finale) → classée `post_start`, jamais utilisée pour une décision |
+| Non-partants | `statut = NON_PARTANT` et `incident = NON_PARTANT` ; exclus des résultats |
+| Disqualifiés | `ordreArrivee` absent, `incident = DISQUALIFIE_POUR_ALLURE_IRREGULIERE` |
+| **Masses de paris** | Deux masses aux cotes **distinctes** : points de vente (réponse par défaut) et Internet (`?specialisation=INTERNET`). Exemple R1C1 : cote de référence du n°3 = 4,9 en points de vente, 3,6 sur Internet. Les courses étrangères n'ont souvent de rapports que sur Internet. Les deux masses sont collectées, et chaque cote ou rapport indique sa masse. |
+
+Open PMU API : l'hébergeur (Vercel) répond **403 Forbidden** à cet environnement,
+sans doute une protection anti-robots. Elle n'est **pas contournée** : le
+recoupement reste en attente, à tester depuis une autre machine.
+
 ---
 
 ## 3. Volume et profondeur réalistes
@@ -431,6 +454,6 @@ honnête dans `artifacts/reports/`.
 | D3 — Stockage | Par défaut : SQLite + Parquet en local, PostgreSQL gratuit (Supabase/Neon) via `DATABASE_URL` pour la persistance |
 | D4 — Périmètre | Schéma multi-discipline ; trot attelé prioritaire pour la modélisation |
 | D5 — Backfill | 12 mois, à faible cadence |
-| D1 — Accès réseau | **En attente** : les hôtes PMU et Open-Meteo restent bloqués depuis l'environnement de développement |
+| D1 — Accès réseau | **Ouvert** le 2026-10-30 pour le PMU et Open-Meteo ; Open PMU API refusée par son hébergeur (403) |
 
 D3 à D5 sont les valeurs proposées, appliquées faute d'indication contraire.

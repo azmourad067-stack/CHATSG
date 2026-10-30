@@ -104,8 +104,9 @@ def validate_snapshot(snap: RaceSnapshot) -> QualityReport:
     missing_trainer = [e.num_pmu for e in runners if not e.trainer_name]
     if missing_trainer:
         add("missing_trainer", Severity.WARNING, f"Entraîneur absent : n° {missing_trainer}.")
-    bad_weight = [e.num_pmu for e in runners if e.weight_kg is not None
-                  and not WEIGHT_RANGE_KG[0] <= e.weight_kg <= WEIGHT_RANGE_KG[1]]
+    bad_weight = [e.num_pmu for e in runners
+                  if any(w is not None and not WEIGHT_RANGE_KG[0] <= w <= WEIGHT_RANGE_KG[1]
+                         for w in (e.weight_kg, e.weight_carried_kg))]
     if bad_weight:
         add("implausible_weight", Severity.ERROR,
             f"Poids non plausibles (hypothèse d'unité à revoir ?) : n° {bad_weight}.")
@@ -115,6 +116,9 @@ def validate_snapshot(snap: RaceSnapshot) -> QualityReport:
         add("invalid_odds", Severity.ERROR, f"Cotes < 1 : n° {bad_odds}.")
     if not any(o.odds_kind in ("reference", "live") for o in snap.odds):
         add("no_pre_race_odds", Severity.WARNING, "Aucune cote disponible avant le départ.")
+
+    if snap.race.result_final and snap.observed_after_start and not snap.payouts:
+        add("no_payouts", Severity.WARNING, "Rapports définitifs non disponibles.")
 
     if snap.results:
         if not snap.observed_after_start:
