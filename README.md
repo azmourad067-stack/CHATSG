@@ -5,7 +5,7 @@ Laboratoire d'intelligence prédictive hippique (marché français, courses PMU)
 connexion à un compte opérateur, aucune garantie de gain.
 
 - Audit et architecture : [`docs/00_audit_et_architecture.md`](docs/00_audit_et_architecture.md)
-- État d'avancement : phase 1 (données) terminée, **phase 2 (premier moteur prédictif)** livrée
+- État d'avancement : phases 1 (données), 2 (moteur prédictif) et **3 (intelligence avancée)** livrées
 
 ## Ce qui fonctionne aujourd'hui (phase 1)
 
@@ -20,8 +20,8 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Traçabilité | Chaque réponse brute est conservée (gzip, SHA-256) et référencée par les lignes qui en dérivent |
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
-| Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Backtesting, Fiche cheval, Configuration. Le Laboratoire IA (phase 3) affiche explicitement son indisponibilité. |
-| Tests | 92 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Laboratoire IA, Backtesting, Fiche cheval, Configuration |
+| Tests | 108 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
 ## Phase 2 — premier moteur prédictif
 
@@ -43,6 +43,21 @@ python scripts/train_models.py
 ```
 
 
+
+## Phase 3 — intelligence avancée
+
+| Brique | Contenu |
+|---|---|
+| Incertitude | Ensemble de modèles appris sur des rééchantillonnages de courses : intervalle par cheval (10e-90e centiles). Score « hors distribution ». Statut de course (exploitable / incertaine / hors distribution) dont les seuils sont appris sur l'historique |
+| Explicabilité | Contributions SHAP natives de LightGBM, relatives aux autres partants : forces et faiblesses de chaque cheval (description du modèle, pas une cause) |
+| Analyse bayésienne | Jockeys et entraîneurs : victoires observées / attendues par les cotes (A/E), modèle Gamma-Poisson dont le lissage est estimé. Test de dispersion calibré, test de persistance d'une période à l'autre |
+| Laboratoire IA | Recherche de sous-groupes (simples et paires) où le marché se trompe : correction des tests multiples (Benjamini-Hochberg) sur tous les tests, puis confirmation sur une période postérieure indépendante. Statuts historisés en base : détectée → en validation → validée / non confirmée / invalidée |
+| Anomalies et dérive | Isolation Forest, puis test : les profils atypiques s'écartent-ils des cotes hors échantillon ? Dérive des variables (PSI), en distinguant celles qui évoluent mécaniquement avec l'historique |
+| Valeur | Signal affiché seulement si le modèle est validé, la course exploitable, et la borne basse de l'intervalle au-dessus de la probabilité du marché |
+
+```bash
+python scripts/run_discovery.py
+```
 
 ## Installation locale
 
