@@ -18,7 +18,35 @@ La base est la **source unique** : les modèles (JSON + texte LightGBM, empreint
 et les rapports y sont stockés. Le disque de Streamlit Cloud et celui des tâches GitHub
 sont éphémères.
 
-## 1. Créer la base PostgreSQL
+## 0. État actuel (30/10/2026)
+
+Le projet Supabase **`horse-intelligence`** (région Paris `eu-west-3`, offre gratuite,
+identifiant `yblpqtcahraievhblsxw`) est créé. Le schéma et la sécurité y sont appliqués
+(`supabase/migrations/`) :
+- 25 tables, toutes protégées par RLS ;
+- aucun droit pour les rôles publics `anon` et `authenticated` de l'API REST Supabase ;
+- un rôle `hi_app` en lecture seule, dont la connexion n'est pas encore activée ;
+- aucun avis de sécurité Supabase.
+
+Il reste deux actions à faire dans le tableau de bord Supabase (aucun mot de passe n'a
+été généré ni transmis en dehors de votre compte) :
+
+1. *Project Settings → Database → Reset database password* : choisissez le mot de passe
+   de l'utilisateur `postgres` (écriture, réservé à GitHub Actions).
+2. *SQL Editor* : activez la connexion du rôle de l'application avec un autre mot de passe :
+   ```sql
+   alter role hi_app with login password 'un-autre-mot-de-passe-long';
+   ```
+3. *Connect → Session pooler* : copiez l'hôte (`aws-0-eu-west-3.pooler.supabase.com`).
+   Les deux chaînes de connexion sont alors :
+   ```
+   écriture (secret GitHub)    : postgresql+psycopg://postgres.yblpqtcahraievhblsxw:<mdp postgres>@<hôte>:5432/postgres?sslmode=require
+   lecture (secret Streamlit)  : postgresql+psycopg://hi_app.yblpqtcahraievhblsxw:<mdp hi_app>@<hôte>:5432/postgres?sslmode=require
+   ```
+
+Passez ensuite directement à l'étape 2 (GitHub).
+
+## 1. Créer la base PostgreSQL (si vous repartez de zéro)
 
 **Supabase** (offre gratuite, 500 Mo) : créer un projet, puis *Connect* → copier la chaîne
 **Session pooler** (port 5432). La connexion directe n'est accessible qu'en IPv6, que
@@ -36,7 +64,7 @@ Le schéma est créé automatiquement à la première exécution d'une tâche (o
 
 ### Rôle en lecture seule pour l'application (recommandé)
 
-Dans l'éditeur SQL de la base, **après** la première collecte (tables créées) :
+Appliquez les deux fichiers de `supabase/migrations/` (schéma, puis sécurité RLS), puis activez la connexion du rôle. Sur une autre base PostgreSQL, l'équivalent minimal est :
 
 ```sql
 create role hi_app login password 'choisir-un-mot-de-passe-long';
