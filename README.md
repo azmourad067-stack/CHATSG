@@ -21,7 +21,7 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
 | Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Laboratoire IA, Backtesting, Fiche cheval, Configuration |
-| Tests | 121 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, simulateur de paris, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Tests | 119 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, incertitude, découverte, simulateur de paris, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
 ## Phase 2 — premier moteur prédictif
 
