@@ -129,3 +129,19 @@ def test_lab_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-untyped-d
     assert {"jockeys", "trainers"} <= set(rep.actors)
     assert rep.anomalies["examples"] and rep.drift["psi"]
     assert latest_lab_report(tmp_path / "lab")["n_tests"] == rep.n_tests
+
+
+def test_validation_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from horse_intelligence.services.validation import latest_validation, run_validation
+
+    repo, _ = trained
+    rep = run_validation(repo.engine, tmp_path / "reports")
+    assert rep["races_with_payouts"] > 0
+    assert all(c["passed"] for c in rep["leakage"]), rep["leakage"]
+    assert rep["robustness"]["probabilities_valid"]
+    for b in rep["betting"].values():
+        assert b["selection_period"][1] < b["test_period"][0]
+    # repère : parier tous les favoris d'un marché qui prélève ~15 % perd de l'argent
+    fav = rep["references_all_period"][0]
+    assert fav["n_bets"] > 0 and fav["roi"] < 0.1
+    assert latest_validation(tmp_path / "reports")["races"] == rep["races"]

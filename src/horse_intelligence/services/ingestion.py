@@ -123,3 +123,27 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
     logger.info("Collecte %s : %d courses, %d exploitables, %d erreur(s)", day,
                 report.races_seen, report.races_ok, len(report.errors))
     return report
+
+
+def backfill_payouts(pmu: PmuCollector, repo: Repository, start: date, end: date,
+                     pool: str = "INTERNET") -> tuple[int, int, list[str]]:
+    """Rattrape les rapports définitifs des courses terminées qui n'en ont pas.
+
+    Renvoie (courses complétées, courses sans rapport chez la source, erreurs).
+    """
+    done, absent, errors = 0, 0, []
+    for r in repo.races_missing_payouts(pool, start, end).to_dict("records"):
+        try:
+            raw = pmu.fetch_rapports_raw(r["race_date"], int(r["reunion_num"]),
+                                         int(r["course_num"]), pool)
+            payload = repo.store_raw(raw)
+            payouts = payouts_from_pmu(pmu.parse_rapports(raw), pool, payload)
+        except NotFoundError:
+            absent += 1
+            continue
+        except CollectorError as exc:
+            errors.append(f"{r['race_date']} R{r['reunion_num']}C{r['course_num']}: {exc}")
+            continue
+        repo.save_payouts(int(r["race_id"]), payouts, raw.fetched_at)
+        done += 1
+    return done, absent, errors

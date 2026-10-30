@@ -11,6 +11,7 @@ from horse_intelligence.data.processors.validation import validate_snapshot
 from horse_intelligence.data.schemas.domain import (
     EntryRecord,
     OddsRecord,
+    PayoutRecord,
     RaceRecord,
     RaceSnapshot,
     ResultRecord,
@@ -59,6 +60,14 @@ def populate(repo: Repository, days: int = 30, races_per_day: int = 6, runners: 
             if final:
                 for pos, idx in enumerate(order, start=1):
                     snap.results.append(ResultRecord(int(idx) + 1, pos, None, None, None))
+                # rapports synthétiques : pari mutuel avec prélèvement d'environ 15 %
+                win = int(order[0])
+                snap.payouts.append(PayoutRecord("SIMPLE_GAGNANT", str(win + 1),
+                                                 round(0.85 / p[win], 2), "INTERNET"))
+                for idx in order[:3]:
+                    snap.payouts.append(PayoutRecord(
+                        "SIMPLE_PLACE", str(int(idx) + 1),
+                        round(max(1.1, 0.85 / min(0.95, 3 * p[idx])), 2), "INTERNET"))
             race_id = repo.upsert_race(race, observed, "pmu", None)
             repo.save_snapshot(race_id, snap, None)
             repo.save_quality_report(validate_snapshot(snap))

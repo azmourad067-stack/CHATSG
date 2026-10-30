@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -10,6 +12,7 @@ import streamlit as st
 from horse_intelligence.frontend.components.cards import EMERALD, metric_card, notice
 from horse_intelligence.frontend.state import get_context
 from horse_intelligence.services.training import REFERENCE_MODEL, latest_report
+from horse_intelligence.services.validation import latest_validation
 
 LABELS = {"uniform": "Uniforme", "market": "Marché brut", REFERENCE_MODEL: "Marché calibré",
           "form_logit": "Logit conditionnel (forme)", "lgbm_form": "LightGBM (forme)",
@@ -73,6 +76,94 @@ def render() -> None:
     st.plotly_chart(fig, width="stretch")
 
     st.subheader("Variables les plus utilisées (LightGBM forme)")
+    _importance(rep)
+    render_validation()
+
+
+def _importance(rep: dict[str, Any]) -> None:
     st.bar_chart(pd.Series(rep["feature_importance"]).sort_values())
     st.caption("Importance = gain cumulé dans les arbres : indique l'usage d'une variable, "
                "pas un lien de causalité.")
+
+
+def _sim_row(label: str, r: dict[str, Any] | None) -> dict[str, Any]:
+    if not r:
+        return {"": label, "Paris": 0}
+    lo, hi = r["roi_ci"]
+    return {"": label, "Paris": r["n_bets"], "Misé (€)": round(r["staked"], 1),
+            "ROI": f"{100 * r['roi']:+.1f} %",
+            "IC 95 % du ROI": f"[{100 * lo:+.1f} ; {100 * hi:+.1f}] %",
+            "Réussite": f"{100 * r['hit_rate']:.0f} %",
+            "Drawdown max (€)": round(r["max_drawdown"], 1),
+            "Pire série": r["longest_losing_streak"]}
+
+
+def render_validation() -> None:
+    val = latest_validation(get_context().settings.reports_dir)
+    st.header("Validation (phase 5)")
+    if val is None:
+        notice("Aucune validation disponible. Lancez : python scripts/run_backtest.py")
+        return
+    st.subheader("Rentabilité théorique — simulation de paris")
+    notice("Décision : probabilités hors échantillon et cote de référence publiée avant le "
+           "départ. Règlement : rapport définitif officiel (mise de 1 €). La règle est choisie "
+           "sur la période de sélection puis appliquée telle quelle au test : seul le test "
+           "mesure une performance. Une rentabilité passée ne garantit rien.")
+    st.caption(f"{val['races']} courses avec cotes, dont {val['races_with_payouts']} avec "
+               "rapports définitifs collectés.")
+    refs = pd.DataFrame([_sim_row(r["strategy"]["name"], r)
+                         for r in val["references_all_period"]])
+    st.markdown("**Repères sans modèle** (toute la période) : ils mesurent le coût du "
+                "prélèvement du pari mutuel.")
+    st.dataframe(refs, hide_index=True, width="stretch")
+    for model, b in val["betting"].items():
+        st.markdown(f"**{LABELS.get(model, model)}** — sélection {b['selection_period'][0]} → "
+                    f"{b['selection_period'][1]}, test {b['test_period'][0]} → "
+                    f"{b['test_period'][1]} ({b['n_strategies_tried']} règles essayées)")
+        if b["chosen"]:
+            st.caption(f"Règle retenue : {b['chosen']['name']}")
+            st.dataframe(pd.DataFrame([_sim_row("Sélection", b["chosen_on_selection"]),
+                                       _sim_row("TEST", b["test"])]),
+                         hide_index=True, width="stretch")
+            if b["test"] and b["test"]["equity"]:
+                eq = pd.DataFrame(b["test"]["equity"])
+                eq["cumul"] = (eq["return"] - eq["stake"]).cumsum()
+                fig = go.Figure(go.Scatter(y=eq["cumul"], mode="lines",
+                                           line={"color": EMERALD}))
+                fig.update_layout(height=220, template="plotly_dark",
+                                  yaxis_title="Gain cumulé (€)", xaxis_title="Paris",
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                  margin={"l": 10, "r": 10, "t": 10, "b": 10})
+                st.plotly_chart(fig, width="stretch")
+        notice(b["message"])
+
+    st.subheader("Résultats par segment (LightGBM + marché vs marché calibré)")
+    seg = pd.DataFrame(val["segments"])
+    if not seg.empty:
+        seg["Verdict"] = np.where(seg["ci_high"] < 0, "meilleur",
+                                  np.where(seg["ci_low"] > 0, "moins bon", "non significatif"))
+        st.dataframe(seg.rename(columns={
+            "dimension": "Dimension", "segment": "Segment", "races": "Courses",
+            "log_loss_model": "Log-loss modèle", "log_loss_reference": "Log-loss marché",
+            "diff": "Δ", "ci_low": "IC bas", "ci_high": "IC haut",
+            "top1_model": "Top-1 modèle", "top1_reference": "Top-1 marché"}).round(4),
+            hide_index=True, width="stretch")
+        st.caption(val["stability"]["message"] + " Segments de moins de 30 courses masqués.")
+
+    st.subheader("Robustesse")
+    rob = val["robustness"]
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        metric_card("Écart entre graines", f"{rob['seed_spread']:.4f}",
+                    f"log-loss, {len(rob['seed_log_losses'])} apprentissages")
+    with c2:
+        metric_card(f"{int(100 * rob['masked_share'])} % de données masquées",
+                    f"{rob['degradation_masked']:+.4f}", "variation de log-loss")
+    with c3:
+        metric_card("Probabilités valides", "oui" if rob["probabilities_valid"] else "NON",
+                    "somme à 100 % malgré les manques")
+
+    st.subheader("Audit des fuites de données")
+    for c in val["leakage"]:
+        icon = "✅" if c["passed"] else "⛔"
+        st.markdown(f"{icon} **{c['name']}** — {c['detail']}")

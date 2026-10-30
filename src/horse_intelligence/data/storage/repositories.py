@@ -17,7 +17,12 @@ from horse_intelligence.config.settings import Settings
 from horse_intelligence.data.collectors.base import HealthReport, RawResponse
 from horse_intelligence.data.processors.cleaning import canonical_name
 from horse_intelligence.data.processors.validation import QualityReport
-from horse_intelligence.data.schemas.domain import EntryRecord, RaceRecord, RaceSnapshot
+from horse_intelligence.data.schemas.domain import (
+    EntryRecord,
+    PayoutRecord,
+    RaceRecord,
+    RaceSnapshot,
+)
 from horse_intelligence.data.storage import database as db
 from horse_intelligence.data.storage.raw_store import RawStore
 
@@ -231,6 +236,32 @@ class Repository:
                         race_id=race_id, pool=p.pool, bet_type=p.bet_type,
                         combination=p.combination, payout_per_eur=p.payout_per_eur,
                         observed_at=snap.observed_at, payload_id=p.payload_id))
+
+    def save_payouts(self, race_id: int, payouts: Sequence[PayoutRecord],
+                     observed_at: datetime) -> int:
+        """Ajoute des rapports définitifs (idempotent). Renvoie le nombre de lignes ajoutées."""
+        added = 0
+        with self.engine.begin() as conn:
+            for p in payouts:
+                exists = conn.execute(select(db.payouts.c.payout_id).where(and_(
+                    db.payouts.c.race_id == race_id, db.payouts.c.pool == p.pool,
+                    db.payouts.c.bet_type == p.bet_type,
+                    db.payouts.c.combination == p.combination))).first()
+                if not exists:
+                    conn.execute(insert(db.payouts).values(
+                        race_id=race_id, pool=p.pool, bet_type=p.bet_type,
+                        combination=p.combination, payout_per_eur=p.payout_per_eur,
+                        observed_at=observed_at, payload_id=p.payload_id))
+                    added += 1
+        return added
+
+    def races_missing_payouts(self, pool: str, start: date, end: date) -> pd.DataFrame:
+        r, p = db.races, db.payouts
+        has = select(p.c.race_id).where(p.c.pool == pool).distinct()
+        return self._df(select(r.c.race_id, r.c.race_date, r.c.reunion_num, r.c.course_num)
+                        .where(and_(r.c.result_final.is_(True), r.c.race_date >= start,
+                                    r.c.race_date <= end, r.c.race_id.not_in(has)))
+                        .order_by(r.c.race_date, r.c.reunion_num, r.c.course_num))
 
     def save_quality_report(self, report: QualityReport, scope: str = "race") -> None:
         with self.engine.begin() as conn:

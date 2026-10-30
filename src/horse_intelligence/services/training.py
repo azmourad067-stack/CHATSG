@@ -52,6 +52,9 @@ LGBM_FEATURES = NUMERIC_FEATURES + CATEGORICAL
 REFERENCE_MODEL = "market_calibrated"
 CANDIDATES = ("lgbm_form", "lgbm_market", "form_logit")
 MIN_RACES_FOR_PROMOTION = 300
+OOS_COLUMNS = ["race_id", "race_date", "num_pmu", "fold", "won", "finish_position",
+               "n_runners", "declared_runners", "discipline", "distance_m", "racecourse",
+               "mkt_prob", "mkt_odds", "mkt_pool", "mkt_rank"]
 
 
 @dataclass
@@ -235,6 +238,10 @@ def train_and_evaluate(engine: Engine, models_dir: Path, reports_dir: Path,
     out = reports_dir / f"walk_forward-{_version()}.json"
     out.write_text(json.dumps(asdict(report), ensure_ascii=False, indent=2, default=str))
     (reports_dir / "walk_forward-latest.json").write_text(out.read_text())
+    # prédictions hors échantillon : seule base légitime pour simuler des paris (phase 5)
+    keep = [*OOS_COLUMNS, *names]
+    evald[[c for c in keep if c in evald.columns]].to_parquet(
+        reports_dir / "walk_forward_predictions-latest.parquet", index=False)
     return report
 
 
@@ -249,3 +256,8 @@ def latest_report(reports_dir: Path) -> dict[str, Any] | None:
 def report_period(report: dict[str, Any]) -> tuple[date, date]:
     a, b = report["period"]
     return date.fromisoformat(a), date.fromisoformat(b)
+
+
+def load_oos_predictions(reports_dir: Path) -> pd.DataFrame | None:
+    path = reports_dir / "walk_forward_predictions-latest.parquet"
+    return pd.read_parquet(path) if path.exists() else None
