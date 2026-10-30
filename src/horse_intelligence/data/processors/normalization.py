@@ -34,7 +34,8 @@ PMU_UNITS = {
     "handicapPoids / poidsConditionMonte": "hectogrammes (580 → 58,0 kg)",
     "heureDepart / dateRapport": "epoch en millisecondes (UTC)",
     "tempsObtenu / reductionKilometrique": "millisecondes (72500 → 1'12\"5)",
-    "gainsCarriere / dividendePourUnEuro": "centimes d'euro (620 → 6,20 €)",
+    "gainsCarriere / dividendePourUnEuro": ("centimes (620 → 6,20 €) ; gains hors France en "
+                                            "monnaie locale : non stockés"),
     "montantPrix": "euros",
     "dernierRapportReference": "cote publiée ~20 à 30 min avant le départ (horodatée)",
     "dernierRapportDirect": "dernière cote ; après la course = cote finale",
@@ -42,6 +43,11 @@ PMU_UNITS = {
 HECTOGRAMS_PER_KG = 10.0
 CENTS_PER_EURO = 100.0
 MS_PER_S = 1000.0
+
+
+def normalize_bet_type(raw: str | None) -> str:
+    """`E_SIMPLE_GAGNANT` (masse Internet) → `SIMPLE_GAGNANT` ; la masse est stockée à part."""
+    return (raw or "SIMPLE_GAGNANT").removeprefix("E_")
 
 
 def _ms_to_s(value: int | None) -> float | None:
@@ -117,7 +123,8 @@ def races_from_programme(day: date, programme: PmuProgramme) -> list[tuple[PmuRe
     return out
 
 
-def entry_from_pmu(p: PmuParticipant, race_date: date) -> EntryRecord:
+def entry_from_pmu(p: PmuParticipant, race_date: date,
+                   earnings_in_euros: bool = True) -> EntryRecord:
     name = clean_text(p.nom) or p.nom
     return EntryRecord(
         num_pmu=p.num_pmu,
@@ -141,8 +148,11 @@ def entry_from_pmu(p: PmuParticipant, race_date: date) -> EntryRecord:
         career_starts=p.nombre_courses,
         career_wins=p.nombre_victoires,
         career_places=p.nombre_places,
+        # Constat du 2026-10-30 : gains des chevaux chiliens en monnaie locale (jusqu'à
+        # ~95 M « € »). Hors France, la devise n'est pas garantie : valeur non stockée.
         career_earnings=(p.gains_participant.gains_carriere / CENTS_PER_EURO
-                         if p.gains_participant and p.gains_participant.gains_carriere is not None
+                         if earnings_in_euros and p.gains_participant
+                         and p.gains_participant.gains_carriere is not None
                          else None),
     )
 
@@ -152,12 +162,12 @@ def odds_from_pmu(p: PmuParticipant, observed_after_start: bool, pool: str = "OF
     out: list[OddsRecord] = []
     ref = p.dernier_rapport_reference
     if ref is not None and ref.rapport:
-        out.append(OddsRecord(p.num_pmu, ref.type_pari or "SIMPLE_GAGNANT", "reference",
+        out.append(OddsRecord(p.num_pmu, normalize_bet_type(ref.type_pari), "reference",
                               ref.rapport, epoch_ms_to_utc(ref.date_rapport), pool, payload_id))
     direct = p.dernier_rapport_direct
     if direct is not None and direct.rapport:
         kind = "post_start" if observed_after_start else "live"
-        out.append(OddsRecord(p.num_pmu, direct.type_pari or "SIMPLE_GAGNANT", kind,
+        out.append(OddsRecord(p.num_pmu, normalize_bet_type(direct.type_pari), kind,
                               direct.rapport, epoch_ms_to_utc(direct.date_rapport), pool,
                               payload_id))
     return out
@@ -180,7 +190,7 @@ def result_from_pmu(p: PmuParticipant) -> ResultRecord | None:
 def payouts_from_pmu(rapports: list[PmuRapportPari], pool: str = "OFFLINE",
                      payload_id: int | None = None) -> list[PayoutRecord]:
     return [
-        PayoutRecord(r.type_pari, clean_text(line.combinaison),
+        PayoutRecord(normalize_bet_type(r.type_pari), clean_text(line.combinaison),
                      line.dividende_pour_un_euro / CENTS_PER_EURO
                      if line.dividende_pour_un_euro is not None else None,
                      pool, payload_id)

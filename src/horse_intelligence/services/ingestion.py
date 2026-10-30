@@ -74,7 +74,8 @@ def ingest_day(day: date, pmu: PmuCollector, repo: Repository,
             if snap is None:
                 snap = RaceSnapshot(race=race, observed_at=raw_part.fetched_at)
                 main_payload = payload
-                snap.entries = [entry_from_pmu(p, day) for p in participants]
+                in_euros = race.country == "FRA"
+                snap.entries = [entry_from_pmu(p, day, in_euros) for p in participants]
                 if snap.observed_after_start:
                     snap.results = [r for p in participants
                                     if (r := result_from_pmu(p)) is not None]

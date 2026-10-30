@@ -125,3 +125,14 @@ def test_weight_units() -> None:
     p0 = PmuParticipant.model_validate({"numPmu": 1, "nom": "X", "handicapPoids": 580,
                                         "poidsConditionMonte": 0})
     assert entry_from_pmu(p0, RACE_DAY).weight_carried_kg == 58.0
+
+
+def test_bet_type_and_foreign_earnings() -> None:
+    from horse_intelligence.data.processors.normalization import normalize_bet_type
+    from horse_intelligence.data.schemas.pmu import PmuParticipant
+
+    assert normalize_bet_type("E_SIMPLE_GAGNANT") == "SIMPLE_GAGNANT"
+    assert normalize_bet_type("COUPLE_PLACE") == "COUPLE_PLACE"
+    p = PmuParticipant.model_validate({"numPmu": 1, "nom": "X",
+                                       "gainsParticipant": {"gainsCarriere": 9460350000}})
+    assert entry_from_pmu(p, RACE_DAY, earnings_in_euros=False).career_earnings is None

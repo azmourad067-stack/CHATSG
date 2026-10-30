@@ -127,6 +127,8 @@ Espagne, États-Unis, Chili ; trot attelé, trot monté, obstacle, plat).
 | `heureDepart`, `dateRapport` | Epoch en millisecondes UTC — **confirmé** |
 | `tempsObtenu`, `reductionKilometrique` | Millisecondes (72500 → 1'12"5) — désormais convertis en secondes |
 | `gainsCarriere`, `dividendePourUnEuro` | **Centimes d'euro** (620 → 6,20 €). Le code les prenait pour des euros : **corrigé** |
+| Gains des chevaux étrangers | En **monnaie locale** (ex. Chili : jusqu'à ~95 M « € »). Comme la devise n'est pas garantie, ces gains ne sont pas stockés pour les courses hors France. |
+| Types de pari Internet | Préfixés `E_` (`E_SIMPLE_GAGNANT`) : normalisés, la masse étant enregistrée à part |
 | `dernierRapportReference` | Publiée **20 à 32 min avant le départ**, avec son horodatage. Elle reste donc utilisable en backtest à sa date de publication, même récupérée après la course. |
 | `dernierRapportDirect` | Horodatée **après** le départ pour une course terminée (= cote finale) → classée `post_start`, jamais utilisée pour une décision |
 | Non-partants | `statut = NON_PARTANT` et `incident = NON_PARTANT` ; exclus des résultats |
