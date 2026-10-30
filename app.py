@@ -1,0 +1,42 @@
+"""Point d'entrée Streamlit : `streamlit run app.py`."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SRC = Path(__file__).resolve().parent / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import streamlit as st  # noqa: E402
+
+from horse_intelligence.frontend import dashboard, horse_profile, races, settings  # noqa: E402
+from horse_intelligence.frontend.components.cards import inject_style  # noqa: E402
+from horse_intelligence.frontend.unavailable import make  # noqa: E402
+from horse_intelligence.monitoring.logging_config import configure_logging  # noqa: E402
+
+st.set_page_config(page_title="Horse Intelligence", page_icon="🐎", layout="wide")
+configure_logging()
+inject_style()
+
+pages = {
+    "Vue d'ensemble": [
+        st.Page(dashboard.render, title="Tableau de bord", default=True),
+        st.Page(races.render, title="Courses du jour", url_path="courses"),
+        st.Page(horse_profile.render, title="Fiche cheval", url_path="cheval"),
+    ],
+    "Intelligence": [
+        st.Page(make("Analyse approfondie"), title="Analyse approfondie", url_path="analyse"),
+        st.Page(make("Laboratoire IA"), title="Laboratoire IA", url_path="laboratoire"),
+        st.Page(make("Backtesting"), title="Backtesting", url_path="backtesting"),
+    ],
+    "Système": [
+        st.Page(settings.render, title="Configuration", url_path="configuration"),
+    ],
+}
+
+nav = st.navigation(pages)
+st.sidebar.caption("Outil d'analyse à usage personnel. Estimations sans garantie de gain. "
+                   "Jouer comporte des risques : 09 74 75 13 13 (appel non surtaxé).")
+nav.run()

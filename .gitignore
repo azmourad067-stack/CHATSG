@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+
+# Secrets — ne jamais versionner
+.env
+.env.*
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Données et artefacts lourds (stockage externe)
+data_store/
+*.db
+*.sqlite
+*.sqlite3
+*.parquet
+*.duckdb
+artifacts/models/*
+!artifacts/models/.gitkeep
+artifacts/reports/*
+!artifacts/reports/.gitkeep
+
+# Divers
+.DS_Store
+.idea/
+.vscode/

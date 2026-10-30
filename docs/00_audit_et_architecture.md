@@ -395,3 +395,18 @@ honnête dans `artifacts/reports/`.
 - **D6 — Services payants** : accepter une clé API LLM (recherche documentaire,
   synthèses) et éventuellement Turf.bzh si l'audit le justifie ? Sinon ces
   modules restent désactivés.
+
+---
+
+## 11. Décisions validées (2026-10-30)
+
+| Décision | Choix |
+|---|---|
+| D2 — Cadre d'usage | **Usage personnel** |
+| D6 — Services payants | **API gratuites uniquement** : Turf.bzh exclu, pas de clé LLM payante (le module de recherche documentaire devra reposer sur des sources gratuites ou rester désactivé) |
+| D3 — Stockage | Par défaut : SQLite + Parquet en local, PostgreSQL gratuit (Supabase/Neon) via `DATABASE_URL` pour la persistance |
+| D4 — Périmètre | Schéma multi-discipline ; trot attelé prioritaire pour la modélisation |
+| D5 — Backfill | 12 mois, à faible cadence |
+| D1 — Accès réseau | **En attente** : les hôtes PMU et Open-Meteo restent bloqués depuis l'environnement de développement |
+
+D3 à D5 sont les valeurs proposées, appliquées faute d'indication contraire.

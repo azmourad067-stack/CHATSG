@@ -1,0 +1,65 @@
+# Collecte planifiée des données PMU.
+# Nécessite le secret DATABASE_URL (PostgreSQL persistant, ex. offre gratuite
+# Supabase/Neon, format postgresql+psycopg://...). Sans ce secret, le job s'arrête
+# sans rien faire : une base SQLite serait perdue à la fin du job.
+name: collect
+
+on:
+  schedule:
+    # Toutes les 30 min de 9 h à 22 h UTC : historise cotes et non-partants avant
+    # départ, puis les résultats. GitHub ne garantit pas la ponctualité des cron.
+    - cron: "7,37 9-22 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Date AAAA-MM-JJ (vide = aujourd'hui)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+      TARGET_DATE: ${{ github.event.inputs.date }}
+    steps:
+      - name: Vérifier la configuration
+        id: cfg
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Secret DATABASE_URL absent : collecte ignorée."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.cfg.outputs.skip != 'true'
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: steps.cfg.outputs.skip != 'true'
+        run: pip install -r requirements.txt "psycopg[binary]>=3.2"
+      - name: Collecte
+        if: steps.cfg.outputs.skip != 'true'
+        run: |
+          if [ -n "$TARGET_DATE" ]; then
+            python scripts/refresh_data.py --date "$TARGET_DATE"
+          else
+            python scripts/refresh_data.py
+          fi
+      # Les réponses brutes (traçabilité) sont conservées comme artefact du job.
+      - uses: actions/upload-artifact@v4
+        if: steps.cfg.outputs.skip != 'true' && always()
+        with:
+          name: raw-payloads-${{ github.run_id }}
+          path: data_store/raw
+          retention-days: 90
+          if-no-files-found: ignore
