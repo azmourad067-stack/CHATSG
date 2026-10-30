@@ -394,7 +394,23 @@ stored_files = Table(
 )
 
 
+SUPPORTED_SCHEMES = ("sqlite:///", "postgresql+psycopg://", "postgresql://")
+
+
+class DatabaseUrlError(ValueError):
+    """Adresse de base mal formée (la valeur n'est jamais affichée : elle contient un secret)."""
+
+
 def make_engine(database_url: str) -> Engine:
+    if not database_url.startswith(SUPPORTED_SCHEMES):
+        scheme = database_url.split(":", 1)[0] if ":" in database_url else "?"
+        hint = (" Il s'agit de l'URL du projet Supabase : il faut la chaîne de connexion "
+                "PostgreSQL (Supabase → Connect → Session pooler)." if scheme == "https" else "")
+        raise DatabaseUrlError(
+            f"DATABASE_URL invalide (schéma « {scheme} »). Format attendu : "
+            f"postgresql+psycopg://utilisateur:motdepasse@hote:5432/base?sslmode=require.{hint}")
+    if database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url.removeprefix("postgresql://")
     if database_url.startswith("sqlite:///"):
         path = database_url.removeprefix("sqlite:///")
         if path and path != ":memory:":

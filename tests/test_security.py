@@ -48,3 +48,16 @@ def test_http_client_disables_redirects_and_sets_timeout() -> None:
     src = (ROOT / "src/horse_intelligence/data/collectors/base.py").read_text()
     assert "timeout=self.config.timeout_s" in src
     assert "allow_redirects=False" in src
+
+
+def test_bad_database_url_is_explained_without_leaking() -> None:
+    import pytest
+
+    from horse_intelligence.data.storage.database import DatabaseUrlError, make_engine
+
+    with pytest.raises(DatabaseUrlError, match="Session pooler") as exc:
+        make_engine("https://projet.supabase.co?cle=secret123")
+    assert "secret123" not in str(exc.value)
+    # le format copié tel quel depuis Supabase (postgresql://) est accepté
+    engine = make_engine("postgresql://u:p@localhost:5432/db")
+    assert engine.dialect.driver == "psycopg"
