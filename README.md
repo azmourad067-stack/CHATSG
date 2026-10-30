@@ -5,7 +5,7 @@ Laboratoire d'intelligence prédictive hippique (marché français, courses PMU)
 connexion à un compte opérateur, aucune garantie de gain.
 
 - Audit et architecture : [`docs/00_audit_et_architecture.md`](docs/00_audit_et_architecture.md)
-- État d'avancement : **phase 1 (infrastructure de données)**
+- État d'avancement : phase 1 (données) terminée, **phase 2 (premier moteur prédictif)** livrée
 
 ## Ce qui fonctionne aujourd'hui (phase 1)
 
@@ -20,10 +20,29 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Traçabilité | Chaque réponse brute est conservée (gzip, SHA-256) et référencée par les lignes qui en dérivent |
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
-| Interface Streamlit | Tableau de bord, Courses du jour, Fiche cheval, Configuration. Les pages Analyse, Laboratoire IA et Backtesting affichent explicitement leur indisponibilité. |
-| Tests | 61 tests (connecteurs, qualité, stockage, anti-fuite, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Interface Streamlit | Tableau de bord, Courses du jour, Analyse approfondie, Backtesting, Fiche cheval, Configuration. Le Laboratoire IA (phase 3) affiche explicitement son indisponibilité. |
+| Tests | 92 tests (connecteurs, qualité, stockage, anti-fuite, variables, probabilités, walk-forward, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
-Aucune probabilité n'est affichée : aucun modèle n'est encore entraîné ni validé.
+## Phase 2 — premier moteur prédictif
+
+| Brique | Contenu |
+|---|---|
+| Variables « as-of » | Instant de décision = départ − 10 min. Historique interne (cheval, jockey, entraîneur, couple cheval-jockey) limité aux dates **strictement antérieures** ; cotes de référence publiées avant la décision ; musique et cumuls de carrière de la source, dont le caractère « avant course » est contrôlé par un audit automatique à chaque entraînement |
+| Probabilités | Calculées par course (softmax), elles somment à 100 % sans renormalisation ad hoc. Places : calcul exact (Harville généralisé) avec le nombre de places payées, qui suit les partants **déclarés** (vérifié sur les rapports réels) |
+| Modèles comparés | Uniforme · marché brut · **marché calibré (référence à battre)** · logit conditionnel de forme · LightGBM forme seule · LightGBM combiné au marché |
+| Validation | Walk-forward (fenêtre croissante, calibration sur la fin de l'apprentissage, test sur les jours suivants). Mesures : log-loss, Brier, ECE, AUC, top-1/top-3, et bootstrap apparié par course contre le marché calibré |
+| Promotion | Un modèle ne devient « actif » que si son gain de log-loss sur le marché calibré a un IC 95 % entièrement négatif sur au moins 300 courses. Sinon, il reste « candidat » : l'interface l'indique et n'affiche aucun signal de valeur |
+| Artefacts | JSON + texte LightGBM (jamais pickle), empreinte SHA-256 vérifiée au chargement, version, période et commit enregistrés |
+
+```bash
+pip install -r requirements-train.txt
+```
+
+```bash
+python scripts/train_models.py
+```
+
+
 
 ## Installation locale
 
@@ -61,7 +80,9 @@ streamlit run app.py
   plusieurs fois les jours de course : chaque passage ajoute un instantané horodaté
   (cotes, non-partants, changements de monte), puis les résultats après les courses.
 - `scripts/import_historical_data.py --start AAAA-MM-JJ [--end …]` : constitution
-  de l'historique, à faible cadence (1 requête/s par défaut), avec reprise.
+  de l'historique, à faible cadence (1 requête/s par défaut), avec reprise. Options
+  `--countries FRA`, `--pools INTERNET` et `--no-payouts` : environ 1 requête par course
+  au lieu de 4 (≈ 1 min par journée de courses françaises).
 - `scripts/export_parquet.py` : export des tables en Parquet pour les analyses.
 - `scripts/crosscheck_open_pmu.py --date AAAA-MM-JJ` : compare les arrivées stockées
   avec l'API communautaire Open PMU (recoupement uniquement).
