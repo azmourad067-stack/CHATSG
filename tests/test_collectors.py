@@ -114,8 +114,7 @@ def test_health_reports_unavailable() -> None:
 
 def test_disabled_sources_are_not_operational(settings) -> None:  # type: ignore[no-untyped-def]
     collectors = build_collectors(settings)
-    for key in ("open_pmu_api", "turf_bzh"):
-        assert collectors[key].health().status is SourceStatus.NOT_OPERATIONAL
+    assert collectors["turf_bzh"].health().status is SourceStatus.NOT_OPERATIONAL
     cfg = replace(load_sources()["pmu"], enabled=False)
     with pytest.raises(NotOperationalError):
         PmuCollector(cfg).fetch_programme_raw(RACE_DAY)

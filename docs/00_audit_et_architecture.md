@@ -44,7 +44,7 @@ des tests de contrat automatisés dès que l'accès réseau sera ouvert (voir §
 | Source | Nature | Contenu attendu | Auth | Statut juridique | Fiabilité | Verdict |
 |---|---|---|---|---|---|---|
 | **PMU turfinfo** `/rest/client/1` | API JSON non documentée publiquement, utilisée par les frontaux PMU | Programme du jour (`/programme/{JJMMAAAA}`), partants (`/…/R{n}/C{n}/participants`), performances détaillées, rapports définitifs, combinaisons | Aucune connue *(à vérifier)* | **Pas de licence de réutilisation publiée connue.** Usage personnel/analytique à faible fréquence ; pas de redistribution. CGU pmu.fr à lire. | Élevée sur le fond (source primaire), mais **contrat non garanti** : champs pouvant changer sans préavis | **Source primaire**, connecteur avec tests de contrat et détection de dérive de schéma |
-| **Open PMU API** (vercel) | Projet communautaire, surcouche/miroir | Résultats et rapports historiques *(à vérifier)* | Aucune *(à vérifier)* | Projet tiers : dépend des droits sur les données PMU sous-jacentes | Inconnue : hébergement gratuit, mainteneur unique probable | **Source secondaire** de recoupement, jamais unique |
+| **Open PMU API** (vercel) | Projet communautaire : API devant une base PostgreSQL privée | ~1 course/jour (Quinté+ probable) 2004–2026, arrivée, chevaux classés, 3 cotes non horodatées | Aucune | MIT sur le code seulement ; aucun droit sur les données | Mainteneur unique, mises à jour manuelles | **Recoupement des arrivées uniquement** (voir §2.5) |
 | **Turf.bzh** | Service tiers avec documentation d'API | Historiques, statistiques *(à vérifier)* | Clé API probable, offre potentiellement **payante** *(à vérifier)* | CGU propres à lire | Inconnue | **À auditer** ; connecteur livré « non opérationnel jusqu'à configuration » |
 | **Open-Meteo** (proposé) | API météo ouverte, archive historique | Température, précipitations, vent, horaires ; archive depuis 1940 | Aucune (usage non commercial) | CC BY 4.0, non commercial gratuit | Bonne | **Recommandée** pour la météo, rattachée aux coordonnées des hippodromes |
 | **France Galop / LeTrot** | Sites officiels des sociétés mères | Fiches chevaux, pedigree, terrain officiel | Pas d'API publique connue | Scraping à proscrire sans autorisation | Élevée | **Hors périmètre v1** ; à étudier par demande formelle |
@@ -89,6 +89,30 @@ C'est la contrainte la plus importante pour la partie « valeur » :
 Conséquence : la détection de valeur en conditions réalistes ne pourra être
 évaluée sérieusement qu'après **plusieurs mois de collecte de snapshots**.
 Le document le dira explicitement dans l'interface.
+
+### 2.5. Audit du code d'Open PMU API (2026-10-30)
+
+Source : https://github.com/open-pmu-api/open-pmu-api (dernier commit du 2026-10-06).
+Audit du code et de l'historique Git, en lecture seule ; l'API elle-même reste
+inaccessible depuis l'environnement de développement.
+
+| Point | Constat |
+|---|---|
+| Nature | Fonction serverless Vercel (TypeScript) devant une base PostgreSQL privée. Un seul endpoint : `GET /api/arrivees?date=MM/DD/YYYY` (ou `hippo=`, `prix=`, en recherche `LIKE`). |
+| Couverture | Le dernier export JSON public de l'historique Git (juillet 2026) contient **8 196 courses de 2004 à 2026, soit exactement une par jour** (365/an, ~16 partants en moyenne) : vraisemblablement la course Quinté+ du jour, **pas le programme complet** (~15 000 courses/an). |
+| Détail des chevaux | `arrivee_details` ne décrit que les **chevaux classés** (5 sur 16 dans l'exemple du README). Dans l'export de juillet 2026, il est **vide pour 99 % des courses**. Les chevaux non classés manquent : biais de sélection si on l'utilise pour entraîner un modèle. |
+| Cotes | `cotes` = trois valeurs **sans horodatage ni définition** (ni moment, ni type). Il est impossible de savoir si la cote finale en fait partie : **inutilisables pour une décision simulée**. |
+| Temps | `heure_depart` en heure locale sans fuseau ; seule la date est fiable. |
+| Identité | Historique des chevaux relié **par le nom seul** (risque d'homonymes). |
+| Mises à jour | Lots manuels irréguliers (ex. « ajout des données du 07/07/2026 au 18/08/2026 »). Données annoncées jusqu'au 29/09/2026. |
+| Droits | Licence MIT **sur le code seulement** ; le README précise qu'elle « ne confère aucun droit particulier sur les données ». Provenance des données non documentée. Pas de limite de débit publiée ni de garantie de disponibilité. Mainteneur unique. |
+
+**Décision** : source **secondaire de recoupement des arrivées uniquement**
+(`scripts/crosscheck_open_pmu.py`). Ni ses cotes ni ses statistiques dérivées
+ne sont importées, et elle ne sert pas d'historique d'entraînement. Le connecteur
+est implémenté et testé sur des réponses simulées conformes au contrat publié
+(README et `types.ts`). Il reste à le valider contre l'API réelle.
+
 
 ---
 

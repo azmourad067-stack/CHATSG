@@ -32,13 +32,20 @@ sources:
     terms_note: "Gratuit pour usage non commercial, attribution CC BY 4.0."
 
   open_pmu_api:
-    name: "Open PMU API (projet communautaire)"
+    name: "Open PMU API (projet communautaire, code MIT)"
     base_url: "https://open-pmu-api.vercel.app"
     kind: secondary
-    enabled: false
+    enabled: true
     free: true
-    status_audit: not_operational
-    terms_note: "Non audité (hôte inaccessible lors de l'audit). Recoupement uniquement."
+    status_audit: audited_code      # code audité ; réponses réelles non encore testées
+    min_interval_s: 2.0
+    timeout_s: 20
+    max_retries: 2
+    terms_note: >
+      Usage limité au recoupement des arrivées. Environ une course par jour
+      (Quinté+ probable), détails des seuls chevaux classés, cotes non horodatées
+      (jamais importées). Licence MIT sur le code uniquement, aucun droit sur les
+      données ; provenance des données non documentée ; mainteneur unique.
 
   turf_bzh:
     name: "Turf.bzh"

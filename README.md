@@ -13,14 +13,15 @@ connexion à un compte opérateur, aucune garantie de gain.
 |---|---|
 | Connecteur PMU turfinfo (programme, partants, rapports définitifs) | Implémenté, testé sur des réponses simulées. **Format réel non encore confirmé.** |
 | Connecteur Open-Meteo (prévisions/archive) | Implémenté, testé sur des réponses simulées. Non branché aux courses (coordonnées des hippodromes à renseigner). |
-| Open PMU API, Turf.bzh | Présents mais **non opérationnels** (non audité / payant) |
+| Open PMU API | Code audité ; connecteur limité au **recoupement des arrivées** (une course par jour, cotes non horodatées — voir audit §2.5) |
+| Turf.bzh | **Non opérationnel** (payant) |
 | HTTP robuste | Délai d'attente, tentatives bornées avec attente exponentielle, débit limité, pas de redirection |
 | Base relationnelle | SQLite (local) ou PostgreSQL (`DATABASE_URL`), schéma complet y compris tables des phases suivantes |
 | Traçabilité | Chaque réponse brute est conservée (gzip, SHA-256) et référencée par les lignes qui en dérivent |
 | Anti-fuite | Partants historisés en ajout seul, requêtes « as-of », cotes relevées après le départ classées `post_start` et exclues, résultats acceptés seulement après le départ |
 | Contrôles qualité | Statut par course : vérifiées / partielles / insuffisantes / indisponible |
 | Interface Streamlit | Tableau de bord, Courses du jour, Fiche cheval, Configuration. Les pages Analyse, Laboratoire IA et Backtesting affichent explicitement leur indisponibilité. |
-| Tests | 53 tests (connecteurs, qualité, stockage, anti-fuite, sécurité, pages Streamlit) + Ruff + Mypy en CI |
+| Tests | 58 tests (connecteurs, qualité, stockage, anti-fuite, sécurité, pages Streamlit) + Ruff + Mypy en CI |
 
 Aucune probabilité n'est affichée : aucun modèle n'est encore entraîné ni validé.
 
@@ -62,6 +63,8 @@ streamlit run app.py
 - `scripts/import_historical_data.py --start AAAA-MM-JJ [--end …]` : constitution
   de l'historique, à faible cadence (1 requête/s par défaut), avec reprise.
 - `scripts/export_parquet.py` : export des tables en Parquet pour les analyses.
+- `scripts/crosscheck_open_pmu.py --date AAAA-MM-JJ` : compare les arrivées stockées
+  avec l'API communautaire Open PMU (recoupement uniquement).
 
 **Limite importante** : pour une journée passée, les cotes récupérées sont des cotes
 d'après-course ; elles ne servent jamais à une décision simulée. Seules les cotes de
