@@ -60,11 +60,13 @@ def run_leakage_checks(raw: dict[str, pd.DataFrame], seed: int = 0) -> list[dict
     key = ["race_id", "num_pmu"]
     a = f[f["race_date"] <= cut].set_index(key)[HISTORY_COLS].sort_index()
     b = g[g["race_date"] <= cut].set_index(key)[HISTORY_COLS].sort_index()
-    same = a.equals(b)
-    checks.append(Check("Permutation des résultats futurs", same,
+    changed = [c for c in HISTORY_COLS
+               if not (a[c].eq(b[c]) | (a[c].isna() & b[c].isna())).all()]
+    checks.append(Check("Permutation des résultats futurs", not changed,
                         f"Variables d'historique jusqu'au {cut} inchangées après permutation "
-                        "des résultats ultérieurs" if same else
-                        "Des variables passées dépendent de résultats futurs !"))
+                        "des résultats ultérieurs" if not changed else
+                        "Des variables passées dépendent de résultats futurs : "
+                        + ", ".join(changed)))
 
     # 3. aucune variable ne prédit « trop bien » le résultat à elle seule
     lab = f[f["won"].notna()]
