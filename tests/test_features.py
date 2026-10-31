@@ -70,6 +70,27 @@ def test_history_features_ignore_same_day_and_future(synth: Repository) -> None:
     assert not a2.sort_index().equals(b2.sort_index())
 
 
+def test_future_races_without_result_do_not_alter_past(synth: Repository) -> None:
+    """Une course future sans arrivée ou avec ex aequo ne doit modifier aucune variable
+    passée : aucune statistique globale calculée sur tout l'historique."""
+    raw = load_raw(synth.engine)
+    before = build_dataset(raw).frame
+    cut = START_DAY + timedelta(days=6)
+    altered = {k: v.copy() for k, v in raw.items()}
+    res = altered["results"].merge(altered["races"][["race_id", "race_date"]], on="race_id")
+    future = res["race_id"][res["race_date"] > cut].unique()[:10]
+    results = altered["results"]
+    results.loc[results["race_id"].isin(future), "finish_position"] = np.nan
+    dead_heat = res["race_id"][res["race_date"] > cut].unique()[-1]  # deux premiers ex aequo
+    results.loc[(results["race_id"] == dead_heat) & (results["finish_position"] == 2),
+                "finish_position"] = 1
+    after = build_dataset(altered).frame
+    key = ["race_id", "num_pmu"]
+    b = before[before["race_date"] <= cut].set_index(key)[HISTORY_COLS].sort_index()
+    a = after[after["race_date"] <= cut].set_index(key)[HISTORY_COLS].sort_index()
+    pd.testing.assert_frame_equal(a, b)
+
+
 def test_first_day_has_no_history(synth: Repository) -> None:
     f = build_dataset(load_raw(synth.engine)).frame
     first = f[f["race_date"] == START_DAY]

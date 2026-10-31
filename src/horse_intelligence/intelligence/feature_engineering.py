@@ -25,10 +25,13 @@ from sqlalchemy import Engine, text
 from horse_intelligence.intelligence.musique import musique_features
 
 DECISION_OFFSET = timedelta(minutes=10)
-FEATURE_SET_VERSION = "fs-2026.10.2"
+FEATURE_SET_VERSION = "fs-2026.10.3"
 
 # Lissage bayésien empirique des taux de réussite (pseudo-observations)
 SHRINK_RUNS = 20.0
+# Taux de victoire vers lequel on lisse : constante fixée a priori (≈ 1 / partants moyens).
+# Une moyenne calculée sur l'historique inclurait des résultats postérieurs à la course.
+PRIOR_WIN_RATE = 0.08
 CAREER_SHRINK = 5.0
 
 CATEGORICAL = ["discipline", "racecourse", "sex", "blinkers", "shoes"]
@@ -238,7 +241,7 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
 
     # --- historique interne (dates strictement antérieures)
     hist = df[df["has_result"]]
-    prior = float(hist["won"].mean()) if len(hist) else 0.1
+    prior = PRIOR_WIN_RATE
     for key, prefix in (("jockey_id", "jockey"), ("trainer_id", "trainer")):
         df = _asof_before(df, _actor_history(hist, key, prefix), [key]).drop(
             columns="_hist_date")
