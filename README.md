@@ -144,7 +144,7 @@ Pour PostgreSQL, installer en plus le pilote : `pip install "psycopg[binary]"`.
 | Brique | Contenu |
 |---|---|
 | Base unique | PostgreSQL gratuit (Supabase ou Neon) : données, **modèles et rapports** (stockés en base avec empreinte SHA-256), purge automatique des anciennes versions |
-| Tâches planifiées | `collect` (toutes les 30 min : cotes avant départ, résultats récents, prédictions figées), `nightly` (journée complète ; dimanche : réentraînement, laboratoire, validation), `backfill` (historique à la demande) |
+| Tâches planifiées | `collect` (toutes les 15 min de 10 h à 22 h UTC, en deux longues exécutions : cotes avant départ, résultats récents, prédictions figées), `nightly` (journée complète ; dimanche : réentraînement, laboratoire, validation), `backfill` (historique à la demande) |
 | Test en conditions réelles | Prédictions enregistrées avant le départ (instant, version, empreinte des entrées), confrontées aux résultats : évaluation sans fuite possible |
 | Application | Lecture seule (`HI_READ_ONLY`), modèles et variables en cache (0,2 s par prédiction) |
 | Exploitation | Fraîcheur de la collecte, suivi réel vs marché, retour arrière de modèle (`scripts/set_active_model.py`) |
