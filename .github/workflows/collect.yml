@@ -1,12 +1,15 @@
-# Collecte intrajournalière légère + prédictions figées avant départ.
+# Collecte intrajournalière + prédictions figées avant départ, toutes les 15 min.
 # Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
-# Coût : ~1 min par exécution, 24 exécutions/jour ≈ 720 min/mois (gratuit en dépôt public ;
-# quota de 2 000 min/mois en dépôt privé).
+# GitHub déclenche mal les planifications fréquentes (constaté : 3 exécutions sur 48 prévues) :
+# deux longues exécutions par jour bouclent donc elles-mêmes jusqu'à 21 h 45 UTC. Une
+# planification en retard couvre encore le reste de la journée.
+# Coût : ~12 h de machine par jour, gratuit en dépôt public (pas en dépôt privé).
 name: collect
 
 on:
   schedule:
-    - cron: "7,37 10-21 * * *"   # toutes les 30 min, 10 h-22 h UTC (courses françaises)
+    - cron: "3 10 * * *"    # 10 h → ~15 h 45 UTC
+    - cron: "3 16 * * *"    # 16 h → 21 h 45 UTC (attend la fin de la précédente)
   workflow_dispatch:
 
 permissions:
@@ -19,7 +22,7 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 350
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       HI_DATA_DIR: ${{ github.workspace }}/data_store
@@ -40,9 +43,17 @@ jobs:
           cache: pip
       - if: steps.cfg.outputs.skip != 'true'
         run: pip install -r requirements.txt "psycopg[binary]>=3.2"
-      - name: Cotes avant départ et résultats récents
+      - name: Cotes avant départ, résultats récents et prédictions (toutes les 15 min)
         if: steps.cfg.outputs.skip != 'true'
-        run: python scripts/refresh_data.py --countries FRA --window-minutes 75
-      - name: Prédictions figées avant départ
-        if: steps.cfg.outputs.skip != 'true'
-        run: python scripts/predict_upcoming.py --window-minutes 75
+        run: |
+          end=$(( $(date +%s) + 340 * 60 ))
+          stop=$(date -u -d "21:45" +%s)
+          [ "$stop" -lt "$end" ] && end=$stop
+          while [ "$(date +%s)" -lt "$end" ]; do
+            tick=$(date +%s)
+            python scripts/refresh_data.py --countries FRA --window-minutes 45 || echo "::warning::collecte en échec"
+            python scripts/predict_upcoming.py --window-minutes 45 || echo "::warning::prédictions en échec"
+            next=$(( tick + 900 ))
+            [ "$next" -ge "$end" ] && break
+            sleep $(( next - $(date +%s) > 0 ? next - $(date +%s) : 0 ))
+          done

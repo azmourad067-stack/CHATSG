@@ -4,7 +4,7 @@ Architecture cible, entièrement gratuite pour un usage personnel :
 
 ```
 GitHub Actions (tâches planifiées)          Streamlit Community Cloud
-  collect  : toutes les 30 min, 10 h-22 h      app.py, lecture seule
+  collect  : toutes les 15 min, 10 h-22 h      app.py, lecture seule
   nightly  : journée complète + dimanche :      │
              réentraînement, labo, validation   │
   backfill : historique, à la demande           │
@@ -83,7 +83,9 @@ sur PostgreSQL 16 : toutes les pages s'affichent, et toute écriture est refusé
 1. *Settings → Secrets and variables → Actions → New repository secret* :
    `DATABASE_URL` = chaîne de connexion **avec droits d'écriture** (utilisateur `postgres`).
 2. Coût en minutes : dépôt **public** = gratuit et illimité ; dépôt **privé** = 2 000 min/mois.
-   La collecte consomme environ 720 min/mois, la tâche nocturne environ 150 min/mois.
+   La collecte tourne environ 12 h par jour (deux exécutions qui bouclent toutes les 15 min,
+   car GitHub déclenche mal les planifications fréquentes) : réservé à un dépôt public. La
+   tâche nocturne consomme environ 150 min/mois.
 3. Fusionner la branche de travail dans `main` : les tâches planifiées ne s'exécutent que
    depuis la branche par défaut.
 
