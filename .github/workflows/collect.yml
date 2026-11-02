@@ -1,22 +1,26 @@
 # Collecte intrajournalière + prédictions figées avant départ, toutes les 15 min.
 # Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
-# GitHub déclenche mal les planifications fréquentes (constaté : 3 exécutions sur 48 prévues) :
-# deux longues exécutions par jour bouclent donc elles-mêmes jusqu'à 21 h 45 UTC. Une
-# planification en retard couvre encore le reste de la journée.
+# GitHub déclenche très mal les planifications de ce dépôt (3 exécutions sur ~48 prévues,
+# d'autres avec 4 h de retard ou jamais) : chaque exécution boucle elle-même toutes les
+# 15 min pendant ~5 h 40, puis se relance (workflow_dispatch) jusqu'à 21 h 30 UTC. Les
+# planifications horaires ne servent qu'à amorcer la chaîne le matin ou à la reprendre si
+# elle se rompt ; une exécution surnuméraire attend, puis est remplacée par la suivante.
 # Coût : ~12 h de machine par jour, gratuit en dépôt public (pas en dépôt privé).
 name: collect
 
 on:
   schedule:
-    - cron: "3 10 * * *"    # 10 h → ~15 h 45 UTC
-    - cron: "3 16 * * *"    # 16 h → 21 h 45 UTC (attend la fin de la précédente)
+    - cron: "3 7-20 * * *"   # amorces horaires (la plupart sont ignorées par GitHub)
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: write   # relance de la chaîne
 
+# Groupe propre : la chaîne ne doit jamais remplacer une tâche nocturne ou un backfill en
+# attente dans le groupe database-writes. La collecte s'arrête à 21 h 45, avant la nuit.
 concurrency:
-  group: database-writes
+  group: collect
   cancel-in-progress: false
 
 jobs:
@@ -44,6 +48,7 @@ jobs:
       - if: steps.cfg.outputs.skip != 'true'
         run: pip install -r requirements.txt "psycopg[binary]>=3.2"
       - name: Cotes avant départ, résultats récents et prédictions (toutes les 15 min)
+        id: loop
         if: steps.cfg.outputs.skip != 'true'
         run: |
           end=$(( $(date +%s) + 340 * 60 ))
@@ -57,3 +62,16 @@ jobs:
             [ "$next" -ge "$end" ] && break
             sleep $(( next - $(date +%s) > 0 ? next - $(date +%s) : 0 ))
           done
+      - name: Relancer la chaîne de collecte
+        # seulement après une boucle complète : un échec d'installation ne doit pas
+        # relancer la chaîne en rafale (les amorces horaires prennent le relais)
+        if: steps.loop.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref_name }}
+        run: |
+          if [ "$(date +%s)" -lt "$(date -u -d "21:30" +%s)" ]; then
+            gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref "$REF"
+          else
+            echo "Fin de journée : la chaîne reprendra demain matin."
+          fi
