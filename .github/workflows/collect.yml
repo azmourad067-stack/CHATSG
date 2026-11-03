@@ -1,16 +1,16 @@
 # Collecte intrajournalière + prédictions figées avant départ, toutes les 15 min.
 # Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
-# GitHub déclenche très mal les planifications de ce dépôt (3 exécutions sur ~48 prévues,
-# d'autres avec 4 h de retard ou jamais) : chaque exécution boucle elle-même toutes les
-# 15 min pendant ~5 h 40, puis se relance (workflow_dispatch) jusqu'à 21 h 30 UTC. Les
-# planifications horaires ne servent qu'à amorcer la chaîne le matin ou à la reprendre si
-# elle se rompt ; une exécution surnuméraire attend, puis est remplacée par la suivante.
-# Coût : ~12 h de machine par jour, gratuit en dépôt public (pas en dépôt privé).
+# GitHub déclenche très mal les planifications de ce dépôt (des journées entières sans aucune
+# exécution) : la collecte est donc une chaîne permanente. Chaque exécution boucle ~5 h 40
+# (collecte toutes les 15 min entre 9 h 30 et 21 h 45 UTC, simple attente la nuit), puis se
+# relance elle-même (workflow_dispatch). Les planifications horaires ne servent qu'à reprendre
+# la chaîne si elle se rompt ; une exécution surnuméraire attend, puis est remplacée.
+# Coût : une machine en continu, gratuit en dépôt public (pas en dépôt privé).
 name: collect
 
 on:
   schedule:
-    - cron: "3 7-20 * * *"   # amorces horaires (la plupart sont ignorées par GitHub)
+    - cron: "3 * * * *"   # reprise si la chaîne s'est rompue (souvent ignoré par GitHub)
   workflow_dispatch:
 
 permissions:
@@ -18,7 +18,7 @@ permissions:
   actions: write   # relance de la chaîne
 
 # Groupe propre : la chaîne ne doit jamais remplacer une tâche nocturne ou un backfill en
-# attente dans le groupe database-writes. La collecte s'arrête à 21 h 45, avant la nuit.
+# attente dans le groupe database-writes. La nuit, elle n'écrit rien en base.
 concurrency:
   group: collect
   cancel-in-progress: false
@@ -52,12 +52,13 @@ jobs:
         if: steps.cfg.outputs.skip != 'true'
         run: |
           end=$(( $(date +%s) + 340 * 60 ))
-          stop=$(date -u -d "21:45" +%s)
-          [ "$stop" -lt "$end" ] && end=$stop
           while [ "$(date +%s)" -lt "$end" ]; do
             tick=$(date +%s)
-            python scripts/refresh_data.py --countries FRA --window-minutes 45 || echo "::warning::collecte en échec"
-            python scripts/predict_upcoming.py --window-minutes 45 || echo "::warning::prédictions en échec"
+            hm=$(date -u +%H%M)
+            if [ "$hm" -ge 0930 ] && [ "$hm" -lt 2145 ]; then
+              python scripts/refresh_data.py --countries FRA --window-minutes 45 || echo "::warning::collecte en échec"
+              python scripts/predict_upcoming.py --window-minutes 45 || echo "::warning::prédictions en échec"
+            fi
             next=$(( tick + 900 ))
             [ "$next" -ge "$end" ] && break
             sleep $(( next - $(date +%s) > 0 ? next - $(date +%s) : 0 ))
@@ -69,9 +70,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref_name }}
-        run: |
-          if [ "$(date +%s)" -lt "$(date -u -d "21:30" +%s)" ]; then
-            gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref "$REF"
-          else
-            echo "Fin de journée : la chaîne reprendra demain matin."
-          fi
+        run: gh workflow run collect.yml --repo "$GITHUB_REPOSITORY" --ref "$REF"

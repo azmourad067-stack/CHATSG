@@ -83,8 +83,9 @@ sur PostgreSQL 16 : toutes les pages s'affichent, et toute écriture est refusé
 1. *Settings → Secrets and variables → Actions → New repository secret* :
    `DATABASE_URL` = chaîne de connexion **avec droits d'écriture** (utilisateur `postgres`).
 2. Coût en minutes : dépôt **public** = gratuit et illimité ; dépôt **privé** = 2 000 min/mois.
-   La collecte tourne environ 12 h par jour (exécutions qui bouclent toutes les 15 min et se
-   relancent elles-mêmes, car GitHub déclenche mal les planifications) : dépôt public. La
+   La collecte est une chaîne permanente (exécutions de ~5 h 40 qui collectent toutes les 15 min
+   en journée et se relancent elles-mêmes, car GitHub déclenche mal les planifications) :
+   réservé à un dépôt public. La
    tâche nocturne consomme environ 150 min/mois.
 3. Fusionner la branche de travail dans `main` : les tâches planifiées ne s'exécutent que
    depuis la branche par défaut.
