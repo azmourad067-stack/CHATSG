@@ -86,7 +86,7 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
                     f"version {meta['version']} · {meta['status']}")
     with c2:
         metric_card("Places payées", str(pred.n_places) if pred.n_places else "aucune",
-                    "simple placé, selon le nombre de partants")
+                 st.write(type(pred), pred if isinstance(pred, dict) else vars(pred))   "simple placé, selon le nombre de partants")
     with c3:
         metric_card("Cotes de référence", "disponibles" if pred.has_market else "absentes",
                     "marché utilisé comme référence")
