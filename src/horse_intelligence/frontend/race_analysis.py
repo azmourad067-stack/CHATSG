@@ -1,67 +1,17 @@
-"""Analyse approfondie d'une course : probabilités, places, comparaison au marché."""
-
-from __future__ import annotations
-
-from datetime import date
-
-import pandas as pd
-import plotly.graph_objects as go
-import streamlit as st
-
-from horse_intelligence.frontend.components.cards import (
-    ELECTRIC,
-    EMERALD,
-    metric_card,
-    notice,
-    status_badge,
-)
-from horse_intelligence.frontend.state import format_dt, get_context
-from horse_intelligence.prediction.race_predictor import (
-    LoadedFamily,
-    RacePrediction,
-    build_frame,
-    load_models,
-    models_use_source_aggregates,
-    predict_race,
-)
-
-MODEL_LABELS = {"lgbm_market": "LightGBM + marché", "lgbm_form": "LightGBM (forme seule)",
-                "market_calibrated": "Marché calibré"}
-
-
-@st.cache_resource(show_spinner=False)
-def _models(_version_key: str) -> dict[str, LoadedFamily]:
-    """Modèles désérialisés une seule fois par version (clé = versions en base)."""
-    return load_models(get_context().repo.engine)
-
-
-@st.cache_resource(show_spinner=False, max_entries=3)
-def _frame(day: date, _data_key: str, use_agg: bool) -> pd.DataFrame:
-    """Variables de toutes les courses jusqu'au jour choisi (une construction par jour)."""
-    return build_frame(get_context().repo.engine, day, use_agg)
-
-
-def _model_key() -> str:
-    from horse_intelligence.models.registry import latest_model
-
-    engine = get_context().repo.engine
-    metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated")]
-    return "|".join(str(m["version"]) if m else "-" for m in metas)
-
-
-def _predict(race_id: int, day: date) -> RacePrediction:
-    engine = get_context().repo.engine
-    mkey = _model_key()
-    models = _models(mkey)
-    if not models:
-        return predict_race(engine, race_id)
-    data_key = f"{mkey}|{get_context().repo.last_update()}"
-    frame = _frame(day, data_key, models_use_source_aggregates(models))
-    return predict_race(engine, race_id, frame=frame, models=models)
-
-
-def _pct(p: float | None) -> str:
-    return "—" if p is None or pd.isna(p) else f"{100 * p:.0f} %"
+def _render_decision(pred: RacePrediction) -> None:
+    """Affiche la décision si elle existe, sans jamais faire planter la page."""
+    decision = getattr(pred, "decision", None)
+    if decision is None and isinstance(pred, dict):
+        decision = pred.get("decision")
+    if decision is None:
+        st.info("Décision indisponible pour cette prédiction.")
+        return
+    # La décision peut être un texte, un dict ou un objet : on récupère un libellé lisible.
+    if isinstance(decision, dict):
+        label = decision.get("label") or decision.get("type") or str(decision)
+    else:
+        label = getattr(decision, "label", None) or getattr(decision, "type", None) or str(decision)
+    st.subheader(f"Décision : {label}")
 
 
 def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
@@ -80,19 +30,22 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
     if pred.uncertainty in ("incertaine", "hors distribution"):
         st.warning(f"Course {unc_text[pred.uncertainty]} : " + " ; ".join(
             pred.uncertainty_reasons) + ". Aucun signal exploitable n'est produit.")
+
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         metric_card("Modèle principal", MODEL_LABELS.get(pred.primary or "", "?"),
                     f"version {meta['version']} · {meta['status']}")
     with c2:
         metric_card("Places payées", str(pred.n_places) if pred.n_places else "aucune",
-                 st.write(type(pred), pred if isinstance(pred, dict) else vars(pred))   "simple placé, selon le nombre de partants")
+                    "simple placé, selon le nombre de partants")
     with c3:
         metric_card("Cotes de référence", "disponibles" if pred.has_market else "absentes",
                     "marché utilisé comme référence")
     with c4:
         metric_card("Incertitude", unc_text.get(pred.uncertainty, pred.uncertainty),
                     "ensemble bootstrap et profil de course")
+
+    _render_decision(pred)
 
     t = pred.table.copy()
     t["cheval"] = t["horse_id"].map(horses)
@@ -151,30 +104,3 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
             }), hide_index=True, width="stretch")
         st.caption("Espérance calculée sur la cote de référence ; au pari mutuel, le rapport "
                    "final diffère. Une espérance estimée positive n'est jamais une garantie.")
-
-
-def render() -> None:
-    st.title("Analyse approfondie")
-    repo = get_context().repo
-    dates = repo.available_dates()
-    if not dates:
-        notice("Aucune course en base.")
-        return
-    day = st.date_input("Date", value=dates[0], min_value=dates[-1], max_value=dates[0],
-                        format="DD/MM/YYYY", key="analysis_date")
-    races = repo.races_on(day if isinstance(day, date) else dates[0])
-    if races.empty:
-        notice("Aucune course collectée pour cette date.")
-        return
-    labels = {int(r["race_id"]): f"R{r['reunion_num']}C{r['course_num']} — "
-              f"{r['racecourse'] or ''} — {r['label'] or ''}" for r in races.to_dict("records")}
-    race_id = st.selectbox("Course", list(labels), format_func=labels.__getitem__)
-    row = races[races["race_id"] == race_id].iloc[0]
-    st.caption(f"{row['discipline'] or '?'} · {row['distance_m'] or '?'} m · "
-               f"départ {format_dt(row['scheduled_start_utc'])}")
-    entries = repo.entries_as_of(int(race_id))
-    horses = dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
-        if not entries.empty else {}
-    with st.spinner("Calcul des probabilités…"):
-        pred = _predict(int(race_id), day if isinstance(day, date) else dates[0])
-    _render_prediction(pred, horses)
