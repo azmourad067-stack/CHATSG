@@ -1,6 +1,7 @@
 # Expériences à la demande (Actions → experiment → Run workflow). Lecture seule.
 #   neural : réseau de neurones contre le modèle actuel (walk-forward complet)
 #   combos : paris combinés (couplé, trio, 2 sur 4) simulés aux rapports officiels
+#   ranks  : simple gagnant / placé sur le k-ième cheval, toutes courses ou quinté
 name: experiment
 
 on:
@@ -9,7 +10,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos]
+        options: [neural, combos, ranks]
         default: neural
 
 permissions:
@@ -40,3 +41,6 @@ jobs:
       - name: Paris combinés (rapports officiels)
         if: env.EXPERIMENT == 'combos'
         run: python scripts/backtest_combos.py
+      - name: Stratégies par rang (simple gagnant / placé, quinté)
+        if: env.EXPERIMENT == 'ranks'
+        run: python scripts/backtest_ranks.py
