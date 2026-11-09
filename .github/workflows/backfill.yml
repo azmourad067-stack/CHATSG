@@ -53,3 +53,6 @@ jobs:
       - name: Rapports définitifs
         if: env.PAYOUTS == 'true'
         run: python scripts/backfill_payouts.py --start "$START" --end "$END"
+      - name: Purge des cotes d'après départ (quota de la base)
+        if: always()
+        run: python scripts/purge_storage.py

@@ -34,6 +34,6 @@ def test_rank_rules_pick_the_right_horse_and_subset() -> None:
     assert rows["2e du marché, gagnant, toutes"]["all"]["roi"] == 2.0
     assert rows["1er du marché, gagnant, toutes"]["all"]["roi"] == -1.0
     assert rows["1er du modèle, placé, quinté"]["all"]["n_bets"] == 20
-    assert len(rows) == 40
+    assert len(rows) == 60
     winners = {r["rule"] for r in robust_winners(list(rows.values()))}
     assert "1er du modèle, gagnant, toutes" in winners

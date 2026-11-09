@@ -172,9 +172,12 @@ def run_combo_backtest(engine: Engine, model_col: str = INCUMBENT,
     return out
 
 
-def run_rank_strategies(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
-    """Simple gagnant/placé sur le k-ième cheval du modèle ou du marché, toutes courses
-    ou quinté seulement, sur les prédictions hors échantillon du dernier entraînement."""
+def run_rank_strategies(engine: Engine, model_col: str = INCUMBENT, start: date | None = None,
+                        end: date | None = None) -> dict[str, Any]:
+    """Simple gagnant/placé sur le k-ième cheval du modèle ou du marché (toutes courses,
+    quinté ou pick 5), sur les prédictions hors échantillon du dernier entraînement,
+    éventuellement limitées à [start, end] (validation d'une règle figée sur une période
+    qu'elle n'a pas vue)."""
     from sqlalchemy import text
 
     from horse_intelligence.evaluation.rank_strategies import (
@@ -186,6 +189,10 @@ def run_rank_strategies(engine: Engine, model_col: str = INCUMBENT) -> dict[str,
     pred = load_oos_predictions(engine)
     if pred is None:
         raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
+    if start is not None:
+        pred = pred[pred["race_date"] >= start]
+    if end is not None:
+        pred = pred[pred["race_date"] <= end]
     with engine.connect() as conn:
         payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
                                    "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
