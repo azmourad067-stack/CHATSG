@@ -1,10 +1,13 @@
-"""Simple gagnant / placé sur le k-ième cheval (modèle ou marché), toutes courses ou quinté.
+"""Simple gagnant / placé sur le k-ième cheval (modèle ou marché) : toutes courses, quinté,
+pick 5.
 
-Usage : python scripts/backtest_ranks.py
+Usage : python scripts/backtest_ranks.py [--start AAAA-MM-JJ] [--end AAAA-MM-JJ]
 Lecture seule ; prédictions hors échantillon du dernier entraînement, rapports officiels.
 """
 
+import argparse
 import sys
+from datetime import date
 
 import _bootstrap  # noqa: F401
 from horse_intelligence.monitoring.logging_config import configure_logging
@@ -19,8 +22,12 @@ def _cell(r: dict) -> str:  # type: ignore[type-arg]
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start", type=date.fromisoformat)
+    parser.add_argument("--end", type=date.fromisoformat)
+    args = parser.parse_args()
     configure_logging()
-    rep = run_rank_strategies(build_context().repo.engine)
+    rep = run_rank_strategies(build_context().repo.engine, start=args.start, end=args.end)
     print(f"Prédictions hors échantillon {rep['period'][0]} → {rep['period'][1]}, 1 € par course, "
           "rapport officiel. ROI (paris, réussite)")
     print(f"{'règle':38s} {'sélection (1re moitié)':>26s} {'TEST (2nde moitié)':>26s}"

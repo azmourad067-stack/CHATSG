@@ -2,7 +2,7 @@
 
 Même protocole que les autres simulations : probabilités hors échantillon, règlement au
 rapport officiel, période de sélection puis période de test postérieure. Toutes les
-règles essayées sont publiées : sur 40 règles, deux ou trois peuvent sembler rentables
+règles essayées sont publiées : sur 60 règles, deux ou trois peuvent sembler rentables
 sur une période par pur hasard ; seule une règle rentable sur la sélection ET sur le
 test, avec un intervalle de confiance au-dessus de zéro, mériterait d'être suivie.
 """
@@ -20,7 +20,9 @@ from horse_intelligence.evaluation.betting_simulator import payout_lookup
 
 RANKS = (1, 2, 3, 4, 5)
 BETS = ("SIMPLE_GAGNANT", "SIMPLE_PLACE")
-SUBSETS = ("toutes", "quinte")
+SUBSETS = ("toutes", "quinte", "pick5")
+SUBSET_BET = {"quinte": "QUINTE_PLUS", "pick5": "PICK5"}
+SUBSET_LABEL = {"toutes": "toutes", "quinte": "quinté", "pick5": "pick 5"}
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,7 @@ class RankRule:
         who = "marché" if self.source == "marché" else "modèle"
         bet = "gagnant" if self.bet_type == "SIMPLE_GAGNANT" else "placé"
         nth = "1er" if self.rank == 1 else f"{self.rank}e"
-        return f"{nth} du {who}, {bet}, {'quinté' if self.subset == 'quinte' else 'toutes'}"
+        return f"{nth} du {who}, {bet}, {SUBSET_LABEL[self.subset]}"
 
 
 @dataclass
@@ -64,7 +66,8 @@ def rank_strategy_table(pred: pd.DataFrame, payouts: pd.DataFrame, model_col: st
     """Une ligne par règle : résultats sur la sélection, le test et toute la période."""
     lookup = payout_lookup(payouts, "INTERNET")
     paid = {k[0] for k in lookup if k[1] == "SIMPLE_GAGNANT"}
-    quinte = set(payouts.loc[payouts["bet_type"] == "QUINTE_PLUS", "race_id"].astype(int))
+    subsets = {k: set(payouts.loc[payouts["bet_type"] == bt, "race_id"].astype(int))
+               for k, bt in SUBSET_BET.items()}
     pred = pred[pred["race_id"].isin(paid)].copy()
     pred["rank_marché"] = pred.groupby("race_id")["mkt_prob"].rank(ascending=False,
                                                                      method="first")
@@ -76,8 +79,8 @@ def rank_strategy_table(pred: pd.DataFrame, payouts: pd.DataFrame, model_col: st
     for source, rank, bet, subset in product(("modèle", "marché"), RANKS, BETS, SUBSETS):
         rule = RankRule("marché" if source == "marché" else model_col, rank, bet, subset)
         p = pred[pred[f"rank_{source}"] == rank]
-        if subset == "quinte":
-            p = p[p["race_id"].isin(quinte)]
+        if subset in subsets:
+            p = p[p["race_id"].isin(subsets[subset])]
         rows.append({"rule": rule.name, **asdict(rule),
                      "selection": asdict(_settle(p[p["race_date"] < cut], lookup, bet)),
                      "test": asdict(_settle(p[p["race_date"] >= cut], lookup, bet)),
