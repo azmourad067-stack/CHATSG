@@ -97,3 +97,18 @@ def test_parquet_export(repo: Repository, tmp_path) -> None:  # type: ignore[no-
     written = export_tables(repo.engine, tmp_path / "pq", ["races", "race_entries"])
     import pandas as pd
     assert len(pd.read_parquet(written["races"])) == 2
+
+
+def test_purge_post_start_odds_keeps_usable_odds(repo: Repository) -> None:
+    ingest_day(RACE_DAY, FakePmu(START + timedelta(hours=2), True), repo)
+    with repo.engine.connect() as conn:
+        kinds = dict(conn.execute(select(db.odds_snapshots.c.odds_kind, func.count())
+                                  .group_by(db.odds_snapshots.c.odds_kind)).all())
+    assert kinds.get("post_start", 0) > 0
+    assert repo.purge_post_start_odds(RACE_DAY) == 0           # course trop récente : gardée
+    assert repo.purge_post_start_odds(RACE_DAY + timedelta(days=1)) == kinds["post_start"]
+    with repo.engine.connect() as conn:
+        left = dict(conn.execute(select(db.odds_snapshots.c.odds_kind, func.count())
+                                 .group_by(db.odds_snapshots.c.odds_kind)).all())
+    assert "post_start" not in left
+    assert {k: v for k, v in kinds.items() if k != "post_start"} == left

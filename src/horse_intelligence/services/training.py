@@ -249,7 +249,7 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
 
 
 KEEP_MODEL_VERSIONS = 3
-KEEP_REPORTS = 5
+KEEP_REPORTS = 3
 
 
 def _prune_artifacts(engine: Engine) -> None:
