@@ -1,20 +1,28 @@
-# Expérience deep learning à la demande (Actions → experiment → Run workflow).
-# Lecture seule : compare un réseau de neurones au modèle actuel, n'enregistre rien.
+# Expériences à la demande (Actions → experiment → Run workflow). Lecture seule.
+#   neural : réseau de neurones contre le modèle actuel (walk-forward complet)
+#   combos : paris combinés (couplé, trio, 2 sur 4) simulés aux rapports officiels
 name: experiment
 
 on:
   workflow_dispatch:
+    inputs:
+      experiment:
+        description: "Expérience"
+        type: choice
+        options: [neural, combos]
+        default: neural
 
 permissions:
   contents: read
 
 jobs:
-  neural:
+  run:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       HI_DATA_DIR: ${{ github.workspace }}/data_store
+      EXPERIMENT: ${{ github.event.inputs.experiment }}
     steps:
       - name: Vérifier la configuration
         run: test -n "$DATABASE_URL" || { echo "Secret DATABASE_URL absent."; exit 1; }
@@ -24,6 +32,11 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements-train.txt "psycopg[binary]>=3.2"
-      - run: pip install -r requirements-dl.txt --index-url https://download.pytorch.org/whl/cpu
+      - if: env.EXPERIMENT == 'neural'
+        run: pip install -r requirements-dl.txt --index-url https://download.pytorch.org/whl/cpu
       - name: Réseau de neurones vs LightGBM (walk-forward)
+        if: env.EXPERIMENT == 'neural'
         run: python scripts/experiment_neural.py
+      - name: Paris combinés (rapports officiels)
+        if: env.EXPERIMENT == 'combos'
+        run: python scripts/backtest_combos.py

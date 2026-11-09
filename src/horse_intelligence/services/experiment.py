@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from typing import Any
 
@@ -135,3 +135,38 @@ def run_neural_experiment(engine: Engine, min_train_days: int = 21, test_days: i
                       for n in names if n != REFERENCE_MODEL},
         vs_incumbent={n: paired_bootstrap(mkt, mkt[n], mkt[INCUMBENT]) for n in CHALLENGERS},
         nn_fits=fits, errors=wf.errors)
+
+
+def run_combo_backtest(engine: Engine, model_col: str = INCUMBENT,
+                       market_col: str = REFERENCE_MODEL) -> dict[str, Any]:
+    """Paris combinés simulés sur les prédictions hors échantillon du dernier entraînement."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.combo_simulator import (
+        COMBO_BETS,
+        build_candidates,
+        reference_strategies,
+        select_then_test_combos,
+        simulate_combos,
+    )
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
+    pred = _with_market(pred)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    cand = build_candidates(pred, payouts, model_col, market_col).table
+    out: dict[str, Any] = {"period": [str(pred["race_date"].min()), str(pred["race_date"].max())],
+                           "bets": {}}
+    for bt in COMBO_BETS:
+        if cand.empty or not (cand["bet_type"] == bt).any():
+            continue
+        whole = cand[cand["bet_type"] == bt]
+        out["bets"][bt] = {
+            "all_period": [asdict(simulate_combos(whole, s)) for s in reference_strategies(bt)],
+            "selection": asdict(select_then_test_combos(cand, bt)),
+        }
+    return out
