@@ -48,6 +48,9 @@ jobs:
       - name: Journée complète
         if: steps.cfg.outputs.skip != 'true'
         run: python scripts/refresh_data.py --countries FRA
+      - name: Purge des données inutiles (quota de la base)
+        if: steps.cfg.outputs.skip != 'true'
+        run: python scripts/purge_storage.py
       - name: Réentraînement hebdomadaire et validation
         if: steps.cfg.outputs.skip != 'true'
         run: |

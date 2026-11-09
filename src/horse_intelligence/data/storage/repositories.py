@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, Table, and_, func, insert, select, update
+from sqlalchemy import Engine, Table, and_, delete, func, insert, select, update
 from sqlalchemy.engine import Connection, CursorResult
 
 from horse_intelligence.config.settings import Settings
@@ -302,6 +302,19 @@ class Repository:
         """Ajoute des rapports définitifs (idempotent). Renvoie le nombre de lignes ajoutées."""
         with self.engine.begin() as conn:
             return self._insert_payouts(conn, race_id, payouts, observed_at)
+
+    def purge_post_start_odds(self, before: date) -> int:
+        """Supprime les cotes relevées après le départ des courses antérieures à `before`.
+
+        Elles ne servent jamais (exclues de toute décision et de l'apprentissage) et les
+        rapports officiels sont conservés à part : place libérée sur la base gratuite.
+        """
+        o, r = db.odds_snapshots, db.races
+        old_races = select(r.c.race_id).where(r.c.race_date < before)
+        with self.engine.begin() as conn:
+            res = conn.execute(delete(o).where(and_(o.c.odds_kind == "post_start",
+                                                    o.c.race_id.in_(old_races))))
+        return int(res.rowcount or 0)
 
     def has_results(self, race_date: date, reunion_num: int, course_num: int) -> bool:
         r, res = db.races, db.race_results
