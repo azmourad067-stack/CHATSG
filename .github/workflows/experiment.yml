@@ -1,0 +1,29 @@
+# Expérience deep learning à la demande (Actions → experiment → Run workflow).
+# Lecture seule : compare un réseau de neurones au modèle actuel, n'enregistre rien.
+name: experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  neural:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+    steps:
+      - name: Vérifier la configuration
+        run: test -n "$DATABASE_URL" || { echo "Secret DATABASE_URL absent."; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-train.txt "psycopg[binary]>=3.2"
+      - run: pip install -r requirements-dl.txt --index-url https://download.pytorch.org/whl/cpu
+      - name: Réseau de neurones vs LightGBM (walk-forward)
+        run: python scripts/experiment_neural.py
