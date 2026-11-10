@@ -3,6 +3,8 @@
 #   combos : paris combinés (couplé, trio, 2 sur 4) simulés aux rapports officiels
 #   ranks  : simple gagnant / placé sur le k-ième cheval (toutes, quinté, pick 5),
 #            éventuellement limité à une période [start, end]
+#   segments : analyse par discipline, partants, distance, réunion, groupe et rang
+#              (tableaux complets en CSV dans l'artefact « analyses »)
 name: experiment
 
 on:
@@ -11,7 +13,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks]
+        options: [neural, combos, ranks, segments]
         default: neural
       start:
         description: "ranks : date de début (AAAA-MM-JJ, facultatif)"
@@ -63,3 +65,12 @@ jobs:
             args+=("--${v,,}" "$val")
           done
           python scripts/backtest_ranks.py "${args[@]}"
+      - name: Analyse par segment
+        if: env.EXPERIMENT == 'segments'
+        run: python scripts/analyse_segments.py --out analyses
+      - uses: actions/upload-artifact@v4
+        if: env.EXPERIMENT == 'segments'
+        with:
+          name: analyses
+          path: analyses
+          retention-days: 30
