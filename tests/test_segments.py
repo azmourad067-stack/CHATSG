@@ -22,6 +22,9 @@ def test_race_group_parsing() -> None:
     assert race_group("PRIX Y", "Pour chevaux ... valeur inférieure", "plat") == "Handicap"
     assert race_group("PRIX Z", "Course à réclamer", "plat") == "Réclamer"
     assert race_group("PRIX W", None, "obstacle") == "Galop (autre)"
+    # un groupe cité dans les conditions d'engagement ne fait pas de la course un groupe
+    assert race_group("PRIX V", "Pour chevaux de 3 ans, n'ayant pas gagné un Groupe I depuis",
+                      "plat") == "Galop (autre)"
 
 
 def test_bh_is_monotone_and_bounded() -> None:

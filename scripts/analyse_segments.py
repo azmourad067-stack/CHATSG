@@ -42,6 +42,9 @@ def main() -> int:
     both = roi[(roi["roi_1re_moitié"] > 0) & (roi["roi_2nde_moitié"] > 0)]
     print(f"\nCases positives sur les deux moitiés : {len(both)} / {len(roi)}")
     print(both[cols].round(3).to_string(index=False) if len(both) else "  aucune")
+    print("\n=== Tableau complet (rangs 1 à 5) ===")
+    full = roi[roi["rang"] != "6+"].sort_values(["dimension", "segment", "pari", "rang"])
+    print(full[cols].round(3).to_string(index=False))
     robust = roi[roi["robuste"]]
     print(f"\nCases robustes (q < 0,10 et positives sur les deux moitiés) : {len(robust)}")
     print(robust[cols].round(3).to_string(index=False) if len(robust) else "  aucune")
