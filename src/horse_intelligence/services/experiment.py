@@ -199,3 +199,30 @@ def run_rank_strategies(engine: Engine, model_col: str = INCUMBENT, start: date 
     rows = rank_strategy_table(_with_market(pred), payouts, model_col)
     return {"period": [str(pred["race_date"].min()), str(pred["race_date"].max())],
             "rules": rows, "robust_winners": robust_winners(rows)}
+
+
+def run_segment_analysis(engine: Engine, model_col: str = INCUMBENT,
+                         market_col: str = REFERENCE_MODEL) -> dict[str, pd.DataFrame]:
+    """Analyse par discipline, partants, distance, réunion, groupe et rang du modèle."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.segment_analysis import (
+        model_value_by_segment,
+        segment_table,
+    )
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
+    pred = _with_market(pred)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+        races = pd.read_sql(text("SELECT race_id, reunion_num, label, conditions_text "
+                                 "FROM races"), conn)
+    frame = pred.merge(races, on="race_id", how="left")
+    return {"roi": segment_table(frame, payouts, model_col),
+            "valeur_modele": model_value_by_segment(frame, model_col, market_col),
+            "periode": pd.DataFrame({"debut": [str(pred["race_date"].min())],
+                                     "fin": [str(pred["race_date"].max())]})}
