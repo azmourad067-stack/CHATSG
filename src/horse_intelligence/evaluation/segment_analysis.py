@@ -30,7 +30,10 @@ _GROUP = re.compile(r"\bGroupe?\s*(III|II|I)\b|\bGR\.?\s*(III|II|I)\b", re.IGNOR
 def race_group(label: object, conditions: object, discipline: object) -> str:
     """Catégorie de la course à partir du libellé et des conditions (texte PMU)."""
     text = f"{label or ''} {conditions or ''}"
-    m = _GROUP.search(text)
+    # le groupe d'une course figure dans son libellé ou en tête de ses conditions ; plus
+    # loin, les conditions citent des groupes pour définir les engagés (« n'ayant pas
+    # gagné un Groupe I »), ce qui ne dit rien de la course elle-même
+    m = _GROUP.search(f"{label or ''} {str(conditions or '')[:40]}")
     if m:
         return f"Groupe {(m.group(1) or m.group(2)).upper()}"
     if re.search(r"\bListed\b|\(L\)", text, re.IGNORECASE):
