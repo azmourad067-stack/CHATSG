@@ -18,6 +18,7 @@ from horse_intelligence.frontend import (  # noqa: E402
     horse_profile,
     race_analysis,
     races,
+    selection,
     settings,
 )
 from horse_intelligence.frontend.components.cards import inject_style  # noqa: E402
@@ -35,6 +36,7 @@ pages = {
     ],
     "Intelligence": [
         st.Page(race_analysis.render, title="Analyse approfondie", url_path="analyse"),
+        st.Page(selection.render, title="Sélection du jour", url_path="selection"),
         st.Page(ai_laboratory.render, title="Laboratoire IA", url_path="laboratoire"),
         st.Page(backtesting.render, title="Backtesting", url_path="backtesting"),
     ],

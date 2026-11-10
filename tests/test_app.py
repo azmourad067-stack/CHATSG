@@ -16,7 +16,7 @@ from horse_intelligence.services.ingestion import ingest_day
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = ["dashboard", "races", "horse_profile", "settings", "race_analysis", "backtesting",
-         "ai_laboratory"]
+         "ai_laboratory", "selection"]
 
 
 def _page_script(module: str) -> None:
