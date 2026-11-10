@@ -226,3 +226,29 @@ def run_segment_analysis(engine: Engine, model_col: str = INCUMBENT,
             "valeur_modele": model_value_by_segment(frame, model_col, market_col),
             "periode": pd.DataFrame({"debut": [str(pred["race_date"].min())],
                                      "fin": [str(pred["race_date"].max())]})}
+
+
+def run_frozen_rules(engine: Engine, model_col: str = INCUMBENT, start: date | None = None,
+                     end: date | None = None) -> dict[str, Any]:
+    """Confronte les règles figées le 10/11/2026 à la période [start, end]."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.frozen_rules import evaluate_frozen_rules
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
+    pred = _with_market(pred)
+    if start is not None:
+        pred = pred[pred["race_date"] >= start]
+    if end is not None:
+        pred = pred[pred["race_date"] <= end]
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+        races = pd.read_sql(text("SELECT race_id, reunion_num, label, conditions_text "
+                                 "FROM races"), conn)
+    frame = pred.merge(races, on="race_id", how="left")
+    return {"period": [str(pred["race_date"].min()), str(pred["race_date"].max())],
+            "rules": evaluate_frozen_rules(frame, payouts, model_col)}

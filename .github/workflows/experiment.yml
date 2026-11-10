@@ -5,6 +5,7 @@
 #            éventuellement limité à une période [start, end]
 #   segments : analyse par discipline, partants, distance, réunion, groupe et rang
 #              (tableaux complets en CSV dans l'artefact « analyses »)
+#   frozen : validation des règles figées le 10/11/2026 sur [start, end]
 name: experiment
 
 on:
@@ -13,14 +14,14 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments]
+        options: [neural, combos, ranks, segments, frozen]
         default: neural
       start:
-        description: "ranks : date de début (AAAA-MM-JJ, facultatif)"
+        description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
         required: false
         default: ""
       end:
-        description: "ranks : date de fin (AAAA-MM-JJ, facultatif)"
+        description: "ranks / frozen : date de fin (AAAA-MM-JJ, facultatif)"
         required: false
         default: ""
 
@@ -54,8 +55,8 @@ jobs:
       - name: Paris combinés (rapports officiels)
         if: env.EXPERIMENT == 'combos'
         run: python scripts/backtest_combos.py
-      - name: Stratégies par rang (simple gagnant / placé, quinté)
-        if: env.EXPERIMENT == 'ranks'
+      - name: Stratégies par rang, ou validation des règles figées
+        if: env.EXPERIMENT == 'ranks' || env.EXPERIMENT == 'frozen'
         run: |
           args=()
           for v in START END; do
@@ -64,7 +65,11 @@ jobs:
             [[ "$val" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Date invalide : $val"; exit 1; }
             args+=("--${v,,}" "$val")
           done
-          python scripts/backtest_ranks.py "${args[@]}"
+          if [ "$EXPERIMENT" = "frozen" ]; then
+            python scripts/validate_frozen_rules.py "${args[@]}"
+          else
+            python scripts/backtest_ranks.py "${args[@]}"
+          fi
       - name: Analyse par segment
         if: env.EXPERIMENT == 'segments'
         run: python scripts/analyse_segments.py --out analyses
