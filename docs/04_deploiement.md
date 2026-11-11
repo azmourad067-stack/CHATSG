@@ -38,11 +38,11 @@ Deux identifiants dédiés existent, et aucun n'est le compte administrateur `po
 Leurs mots de passe ont été générés aléatoirement et remis au propriétaire du projet
 hors du dépôt. Pour les changer : *SQL Editor* →
 `alter role hi_writer with password '…';` (idem pour `hi_app`), puis mettre à jour les
-secrets. Chaînes de connexion (hôte à confirmer dans *Connect → Session pooler*) :
+secrets. Chaînes de connexion (hôte vérifié le 10/11/2026 : **aws-1**, pas aws-0 ; en cas de doute, *Connect → Session pooler*) :
 
 ```
-GitHub    : postgresql+psycopg://hi_writer.yblpqtcahraievhblsxw:<mdp>@aws-0-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
-Streamlit : postgresql+psycopg://hi_app.yblpqtcahraievhblsxw:<mdp>@aws-0-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
+GitHub    : postgresql+psycopg://hi_writer.yblpqtcahraievhblsxw:<mdp>@aws-1-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
+Streamlit : postgresql+psycopg://hi_app.yblpqtcahraievhblsxw:<mdp>@aws-1-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require
 ```
 
 La branche de travail est fusionnée dans `main`. Passez directement à l'étape 2 (GitHub).
@@ -54,7 +54,7 @@ La branche de travail est fusionnée dans `main`. Passez directement à l'étape
 GitHub Actions ne gère pas. Adapter le préfixe pour SQLAlchemy :
 
 ```
-postgresql+psycopg://postgres.<ref>:<mot_de_passe>@aws-0-<région>.pooler.supabase.com:5432/postgres?sslmode=require
+postgresql+psycopg://postgres.<ref>:<mot_de_passe>@aws-N-<région> (N = 0 ou 1 selon le projet : voir *Connect → Session pooler*).pooler.supabase.com:5432/postgres?sslmode=require
 ```
 
 **Neon** (offre gratuite, 0,5 Go) : alternative compatible IPv4, même format
@@ -112,7 +112,7 @@ actif), avec 5 rapports par type.
 1. share.streamlit.io → *Create app* → ce dépôt, branche `main`, fichier `app.py`.
 2. *Advanced settings* : Python 3.12 ; *Secrets* :
    ```toml
-   DATABASE_URL = "postgresql+psycopg://hi_app.<ref>:<mot_de_passe>@…:5432/postgres?sslmode=require"
+   DATABASE_URL = "postgresql+psycopg://hi_app.<ref>:<mot_de_passe>@aws-1-eu-west-3.pooler.supabase.com:5432/postgres?sslmode=require"
    HI_READ_ONLY = "1"
    ```
 3. Déployer. `packages.txt` installe `libgomp1` (requis par LightGBM).
