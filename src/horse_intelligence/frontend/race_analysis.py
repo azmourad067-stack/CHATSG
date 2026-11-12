@@ -29,15 +29,19 @@ MODEL_LABELS = {"lgbm_market": "LightGBM + marché", "lgbm_form": "LightGBM (for
                 "market_calibrated": "Marché calibré"}
 
 
+# Attention : Streamlit ignore, pour la clé du cache, les paramètres dont le nom commence
+# par « _ ». Les clés de version et de fraîcheur doivent donc être des paramètres normaux,
+# sinon le cache n'est jamais invalidé (nouvelles cotes ou nouveau modèle ignorés).
 @st.cache_resource(show_spinner=False)
-def _models(_version_key: str) -> dict[str, LoadedFamily]:
+def _models(version_key: str) -> dict[str, LoadedFamily]:
     """Modèles désérialisés une seule fois par version (clé = versions en base)."""
     return load_models(get_context().repo.engine)
 
 
-@st.cache_resource(show_spinner=False, max_entries=3)
-def _frame(day: date, _data_key: str, use_agg: bool) -> pd.DataFrame:
-    """Variables de toutes les courses jusqu'au jour choisi (une construction par jour)."""
+@st.cache_resource(show_spinner=False, max_entries=2)
+def _frame(day: date, data_key: str, use_agg: bool) -> pd.DataFrame:
+    """Variables de toutes les courses jusqu'au jour choisi, reconstruites à chaque nouvelle
+    collecte (clé = versions des modèles + date de la dernière donnée reçue)."""
     return build_frame(get_context().repo.engine, day, use_agg)
 
 
