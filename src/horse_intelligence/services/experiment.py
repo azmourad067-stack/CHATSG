@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from typing import Any
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import Engine
 
@@ -252,3 +253,57 @@ def run_frozen_rules(engine: Engine, model_col: str = INCUMBENT, start: date | N
     frame = pred.merge(races, on="race_id", how="left")
     return {"period": [str(pred["race_date"].min()), str(pred["race_date"].max())],
             "rules": evaluate_frozen_rules(frame, payouts, model_col)}
+
+
+def run_bankroll(engine: Engine, model_col: str = INCUMBENT, rule_value: str = "Trot G",
+                 n_sims: int = 10_000) -> dict[str, Any]:
+    """Simulation de bankroll de la règle figée « 3e du modèle, gagnant, trot G » (ou d'une
+    autre règle figée désignée par sa valeur de segment) à partir de ses paris historiques
+    hors échantillon, réglés aux rapports officiels."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.bankroll import run_scenarios
+    from horse_intelligence.evaluation.frozen_rules import FROZEN_RULES, rule_bets
+    from horse_intelligence.services.training import load_oos_predictions
+
+    rule = next(r for r in FROZEN_RULES if r.value == rule_value)
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez scripts/train_models.py")
+    pred = _with_market(pred)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+        races = pd.read_sql(text("SELECT race_id, reunion_num, label, conditions_text "
+                                 "FROM races"), conn)
+    bets = rule_bets(pred.merge(races, on="race_id", how="left"), payouts, model_col, rule)
+    if bets.empty:
+        raise ValueError("aucun pari historique pour cette règle")
+    first, last = bets["race_date"].min(), bets["race_date"].max()
+    years = max((last - first).days, 1) / 365.25
+    per_year = round(len(bets) / years)
+    profits = bets["profit"].to_numpy()
+    # parcours réel, dans l'ordre chronologique
+    cum = profits.cumsum()
+    peak = np.maximum.accumulate(np.concatenate([[0.0], cum]))[1:]
+    losing = profits <= -1.0 + 1e-12
+    streak = best = 0
+    for lost in losing:
+        streak = streak + 1 if lost else 0
+        best = max(best, streak)
+    by_year = bets.assign(year=pd.to_datetime(bets["race_date"]).dt.year).groupby("year")[
+        "profit"].agg(["count", "sum", "mean"])
+    return {
+        "rule": rule.name, "period": [str(first), str(last)], "n_bets": len(bets),
+        "bets_per_year": per_year, "hit_rate": float((profits > -1).mean()),
+        "roi": float(profits.mean()),
+        "best_payout": float(profits.max() + 1.0),
+        "median_winning_payout": float(np.median(profits[profits > -1] + 1.0))
+        if (profits > -1).any() else float("nan"),
+        "real_path": {"final": float(cum[-1]), "max_drawdown": float((peak - cum).max()),
+                      "longest_losing_streak": int(best), "lowest": float(min(cum.min(), 0.0))},
+        "real_by_year": {int(str(y)): {"paris": int(r["count"]), "gain": float(r["sum"]),
+                                       "roi": float(r["mean"])}
+                         for y, r in by_year.iterrows()},
+        "scenarios": run_scenarios(profits, per_year, n_sims),
+    }
