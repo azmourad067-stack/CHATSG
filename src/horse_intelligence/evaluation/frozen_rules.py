@@ -46,22 +46,34 @@ FROZEN_RULES = (
 )
 
 
-def evaluate_frozen_rules(frame: pd.DataFrame, payouts: pd.DataFrame, model_col: str,
-                          n_boot: int = 4000, seed: int = 0) -> list[dict[str, Any]]:
+def rule_bets(frame: pd.DataFrame, payouts: pd.DataFrame, model_col: str,
+              rule: FrozenRule) -> pd.DataFrame:
+    """Paris de la règle (1 € chacun) : date, course, numéro joué et gain net au rapport
+    officiel de la masse Internet (−1 si le cheval ne paie pas)."""
     lookup = payout_lookup(payouts, "INTERNET")
     paid = {k[0] for k in lookup if k[1] == "SIMPLE_GAGNANT"}
-    quinte = set(payouts.loc[payouts["bet_type"] == "QUINTE_PLUS", "race_id"].astype(int))
     f = add_segments(frame[frame["race_id"].isin(paid)], model_col)
+    sub = f[f["rang_modèle"] == rule.rank]
+    if rule.quinte_only:
+        quinte = set(payouts.loc[payouts["bet_type"] == "QUINTE_PLUS", "race_id"].astype(int))
+        sub = sub[sub["race_id"].isin(quinte)]
+    if rule.column is not None:
+        sub = sub[sub[rule.column] == rule.value]
+    profit = [lookup.get((int(r), rule.bet_type, str(int(n))), 0.0) - 1.0
+              for r, n in zip(sub["race_id"], sub["num_pmu"], strict=True)]
+    return pd.DataFrame({"race_date": sub["race_date"].to_numpy(),
+                         "race_id": sub["race_id"].to_numpy(),
+                         "num_pmu": sub["num_pmu"].to_numpy(),
+                         "profit": np.asarray(profit, dtype=float)}).sort_values(
+        ["race_date", "race_id"], kind="stable").reset_index(drop=True)
+
+
+def evaluate_frozen_rules(frame: pd.DataFrame, payouts: pd.DataFrame, model_col: str,
+                          n_boot: int = 4000, seed: int = 0) -> list[dict[str, Any]]:
     rng = np.random.default_rng(seed)
     out = []
     for rule in FROZEN_RULES:
-        sub = f[f["rang_modèle"] == rule.rank]
-        if rule.quinte_only:
-            sub = sub[sub["race_id"].isin(quinte)]
-        if rule.column is not None:
-            sub = sub[sub[rule.column] == rule.value]
-        profit = np.array([lookup.get((int(r), rule.bet_type, str(int(n))), 0.0) - 1.0
-                           for r, n in zip(sub["race_id"], sub["num_pmu"], strict=True)])
+        profit = rule_bets(frame, payouts, model_col, rule)["profit"].to_numpy()
         if len(profit) >= 2:
             boots = profit[rng.integers(0, len(profit), size=(n_boot, len(profit)))].mean(1)
             ci = (float(np.quantile(boots, 0.025)), float(np.quantile(boots, 0.975)))
