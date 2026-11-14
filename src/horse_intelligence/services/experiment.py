@@ -437,3 +437,87 @@ def frozen_rule_by_period(frame: pd.DataFrame, payouts: pd.DataFrame, models: tu
                                 float("nan"), "hit_rate": float((p > -1).mean()) if len(p)
                                 else float("nan"), "roi_ci": ci}
     return out
+
+
+MODEL_CHALLENGERS = ("rank_market", "catboost_market", "stack_market")
+
+
+def models_runners(catboost_refit_days: int = 14,
+                   fits: list[dict[str, Any]] | None = None) -> dict[str, ModelRunner]:
+    """LightGBM de production et candidats, appris UNE fois par pli et partagés :
+    `lgbm_market` (référence actuelle), `rank_market` (classement par course),
+    `catboost_market`, `stack_market` (logit conditionnel sur les trois scores + marché).
+    CatBoost, plus lent, n'est réappris que tous les `catboost_refit_days` jours de données
+    (sans fuite : un modèle appris sur un pli ne voit que des dates antérieures)."""
+    from horse_intelligence.models.challengers import (
+        CalibratedScores,
+        CatBoostScore,
+        LgbmBinaryScore,
+        LgbmRankScore,
+    )
+
+    log = fits if fits is not None else []
+    state: dict[str, Any] = {"key": None, "cat": None, "cat_until": None}
+
+    def bank(base: pd.DataFrame) -> dict[str, Any]:
+        key = (base["race_date"].max(), len(base))
+        if state["key"] != key:
+            t0 = time.perf_counter()
+            last = base["race_date"].max()
+            state["lgbm"] = LgbmBinaryScore(LGBM_FEATURES, CATEGORICAL).fit(base)
+            state["rank"] = LgbmRankScore(LGBM_FEATURES, CATEGORICAL).fit(base)
+            refit = state["cat"] is None or (last - state["cat_until"]).days >= catboost_refit_days
+            if refit:
+                state["cat"] = CatBoostScore(LGBM_FEATURES, CATEGORICAL).fit(base)
+                state["cat_until"] = last
+            state["key"] = key
+            log.append({"trained_until": str(last), "catboost_refit": refit,
+                        "seconds": round(time.perf_counter() - t0, 1)})
+        return state
+
+    def runner(names: tuple[str, ...]) -> ModelRunner:
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            b = bank(base)
+            m = CalibratedScores({n: b[n] for n in names}, with_market=True)
+            m.fit(_with_market(calib))
+            sub = _with_market(test)
+            return _masked(test, sub, m.predict(sub))
+        return run
+
+    return {"lgbm_market": runner(("lgbm",)), "rank_market": runner(("rank",)),
+            "catboost_market": runner(("cat",)),
+            "stack_market": runner(("lgbm", "rank", "cat"))}
+
+
+def run_models_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                          calib_days: int = 7, catboost_refit_days: int = 14) -> dict[str, Any]:
+    """D'autres modèles que LightGBM binaire font-ils mieux ? Critère fixé AVANT de voir les
+    résultats : un des candidats bat `lgbm_market` en log-loss, IC 95 % entièrement < 0."""
+    t0 = time.perf_counter()
+    raw = load_raw(engine)
+    ds = build_dataset(raw)
+    if not audit_source_aggregates(ds.frame).passed:
+        ds = build_dataset(raw, use_source_aggregates=False)
+    frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
+    fits: list[dict[str, Any]] = []
+    runners = {REFERENCE_MODEL: model_runners()[REFERENCE_MODEL],
+               **models_runners(catboost_refit_days, fits)}
+    wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
+    evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
+    names = list(runners)
+    mkt = _with_market(evald)
+    mkt = mkt[mkt.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)]
+    vs_inc = {n: paired_bootstrap(mkt, mkt[n], mkt[INCUMBENT]) for n in MODEL_CHALLENGERS}
+    dates = sorted(frame["race_date"].unique())
+    return {
+        "period": [str(dates[0]), str(dates[-1])], "n_races": int(mkt["race_id"].nunique()),
+        "n_folds": len(wf.folds), "seconds": round(time.perf_counter() - t0, 1),
+        "metrics": {n: compute_metrics(mkt, mkt[n]).as_dict() for n in names},
+        "vs_reference": {n: paired_bootstrap(mkt, mkt[n], mkt[REFERENCE_MODEL])
+                         for n in names if n != REFERENCE_MODEL},
+        "vs_incumbent": vs_inc,
+        "success": any(d["ci_high"] < 0 for d in vs_inc.values()),
+        "fits": fits[:3] + fits[-2:], "n_fits": len(fits),
+        "catboost_refits": sum(f["catboost_refit"] for f in fits),
+        "errors": wf.errors,
+    }
