@@ -370,6 +370,10 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
                                    "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
     paired = {new: paired_bootstrap(mkt, mkt[new], mkt[old]) for old, new in FEATURES_PAIRS}
     rank_rows = rank_strategy_table(mkt, payouts, "lgbm_market_v2")
+    with engine.connect() as conn:
+        races = pd.read_sql(text("SELECT race_id, label, conditions_text FROM races"), conn)
+    frozen = frozen_rule_by_period(mkt.merge(races, on="race_id", how="left"), payouts,
+                                   ("lgbm_market", "lgbm_market_v2"))
     dates = sorted(frame["race_date"].unique())
     return {
         "period": [str(dates[0]), str(dates[-1])], "n_races": int(mkt["race_id"].nunique()),
@@ -386,7 +390,42 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
         "betting": {m: asdict(select_then_test(mkt, payouts, m))
                     for m in ("lgbm_market", "lgbm_market_v2")},
         "ranks_robust": robust_winners(rank_rows),
+        "frozen_trot_g": frozen,
         "ranks_best_test": sorted([r for r in rank_rows if r["test"]["n_bets"] > 0],
                                   key=lambda r: -r["test"]["roi"])[:8],
         "errors": wf.errors,
     }
+
+
+FROZEN_SPLIT = "2025-11-19"  # fin de l'année de validation des règles figées le 10/11/2026
+
+
+def frozen_rule_by_period(frame: pd.DataFrame, payouts: pd.DataFrame, models: tuple[str, ...],
+                          rule_value: str = "Trot G", n_boot: int = 4000,
+                          seed: int = 0) -> dict[str, dict[str, dict[str, Any]]]:
+    """Règle figée (par défaut « 3e du modèle, gagnant, trot G ») appliquée avec chaque
+    modèle, sur l'année de validation (≤ FROZEN_SPLIT), l'année de découverte et le total."""
+    from datetime import date as _date
+
+    from horse_intelligence.evaluation.frozen_rules import FROZEN_RULES, rule_bets
+
+    rule = next(r for r in FROZEN_RULES if r.value == rule_value)
+    split = _date.fromisoformat(FROZEN_SPLIT)
+    rng = np.random.default_rng(seed)
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for model in models:
+        bets = rule_bets(frame, payouts, model, rule)
+        periods = {"validation": bets[bets["race_date"] <= split],
+                   "découverte": bets[bets["race_date"] > split], "total": bets}
+        out[model] = {}
+        for name, b in periods.items():
+            p = b["profit"].to_numpy()
+            if len(p) >= 2:
+                boots = p[rng.integers(0, len(p), size=(n_boot, len(p)))].mean(1)
+                ci = (float(np.quantile(boots, 0.025)), float(np.quantile(boots, 0.975)))
+            else:
+                ci = (float("nan"), float("nan"))
+            out[model][name] = {"n_bets": len(p), "roi": float(p.mean()) if len(p) else
+                                float("nan"), "hit_rate": float((p > -1).mean()) if len(p)
+                                else float("nan"), "roi_ci": ci}
+    return out

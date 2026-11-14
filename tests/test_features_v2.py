@@ -121,3 +121,5 @@ def test_features_experiment_runs_end_to_end(repo: Repository) -> None:
     assert isinstance(rep["success"], bool)
     assert "lgbm_form_v2" in rep["importance"]
     assert not rep["errors"]
+    assert set(rep["frozen_trot_g"]) == {"lgbm_market", "lgbm_market_v2"}
+    assert set(rep["frozen_trot_g"]["lgbm_market"]) == {"validation", "découverte", "total"}
