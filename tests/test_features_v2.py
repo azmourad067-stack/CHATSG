@@ -117,7 +117,7 @@ def test_features_experiment_runs_end_to_end(repo: Repository) -> None:
     populate(repo, days=36)
     rep = run_features_experiment(repo.engine)
     assert rep["n_folds"] >= 1 and rep["n_races"] > 0
-    assert set(rep["v2_vs_v1"]) == {"lgbm_market_v2", "lgbm_form_v2"}
+    assert set(rep["new_vs_old"]) == {"lgbm_market_v2", "lgbm_form_v2"}
     assert isinstance(rep["success"], bool)
     assert "lgbm_form_v2" in rep["importance"]
     assert not rep["errors"]

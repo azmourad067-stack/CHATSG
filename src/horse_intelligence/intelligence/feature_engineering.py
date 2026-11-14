@@ -25,7 +25,7 @@ from sqlalchemy import Engine, text
 from horse_intelligence.intelligence.musique import musique_features
 
 DECISION_OFFSET = timedelta(minutes=10)
-FEATURE_SET_VERSION = "fs-2026.11.1"
+FEATURE_SET_VERSION = "fs-2026.11.2"
 
 # Lissage bayésien empirique des taux de réussite (pseudo-observations)
 SHRINK_RUNS = 20.0
@@ -69,6 +69,13 @@ APTITUDE_FEATURES = ["apt_course_runs", "apt_course_pct", "apt_dist_runs", "apt_
 RECENT_FEATURES = ["jockey_runs_30d", "jockey_win_rate_30d", "trainer_runs_30d",
                    "trainer_win_rate_30d"]
 V2_FEATURES = SPEED_FEATURES + GEAR_FEATURES + APTITUDE_FEATURES + RECENT_FEATURES
+# Variables « v3 » (11/2026), même règle d'adoption que les v2 (expérience `features3`) :
+# - terrain (galop) : pénétromètre, piste en sable fibré (PSF), aptitude du cheval au terrain ;
+# - changement de catégorie (dotation) et de distance par rapport aux courses précédentes ;
+# - résultats passés du couple cheval / driver-jockey ; entraîneur sur l'hippodrome du jour.
+V3_FEATURES = ["going_pen", "going_level", "going_psf", "apt_going_runs", "apt_going_pct",
+               "class_change", "dist_change", "apt_pair_runs", "apt_pair_pct",
+               "trainer_course_runs", "trainer_course_win_rate"]
 D4 = "DEFERRE_ANTERIEURS_POSTERIEURS"
 APT_SHRINK = 3.0
 RECENT_DAYS = 30
@@ -115,6 +122,10 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
                res.reduction_km_s
         FROM race_results res JOIN races r ON r.race_id = res.race_id
         WHERE r.race_date <= :until""", until=until)
+    going = _read(engine, """
+        SELECT c.race_id, c.going_label, c.penetrometer, c.observed_at
+        FROM racecourse_conditions c JOIN races r ON r.race_id = c.race_id
+        WHERE r.race_date <= :until""", until=until)
     odds = _read(engine, """
         SELECT o.race_id, o.num_pmu, o.pool, o.odds, o.published_at, o.observed_at
         FROM odds_snapshots o JOIN races r ON r.race_id = o.race_id
@@ -132,7 +143,9 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
     entries["observed_at"] = _utc(entries["observed_at"])
     odds["published_at"] = _utc(odds["published_at"])
     odds["observed_at"] = _utc(odds["observed_at"])
-    return {"races": races, "entries": entries, "results": results, "odds": odds}
+    going["observed_at"] = _utc(going["observed_at"])
+    return {"races": races, "entries": entries, "results": results, "odds": odds,
+            "going": going}
 
 
 def _entries_at_decision(entries: pd.DataFrame, races: pd.DataFrame) -> pd.DataFrame:
@@ -350,9 +363,91 @@ def _add_v2_features(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_rc", "_dist", "_start"])
 
 
+GOING_LEVELS = (("très léger", 0), ("léger", 0), ("bon léger", 1), ("bon souple", 2),
+                ("très souple", 3), ("souple", 2), ("bon", 1), ("collant", 3),
+                ("très lourd", 4), ("lourd", 4))
+
+
+def _going_level(label: object, pen: float) -> float:
+    """Terrain ordonné : 0 léger, 1 bon, 2 souple, 3 très souple / collant, 4 lourd."""
+    text = str(label or "").strip().lower()
+    for key, level in GOING_LEVELS:  # les libellés composés sont testés en premier
+        if text.startswith(key):
+            return float(level)
+    if np.isfinite(pen):
+        return float(np.digitize(pen, [2.8, 3.25, 3.75, 4.55]))
+    return np.nan
+
+
+def _going(going: pd.DataFrame | None) -> pd.DataFrame:
+    """Terrain annoncé de chaque course (première observation : condition d'avant-course)."""
+    cols = ["race_id", "going_pen", "going_level", "going_psf"]
+    if going is None or going.empty:
+        return pd.DataFrame(columns=cols)
+    g = going.sort_values("observed_at").drop_duplicates("race_id", keep="first").copy()
+    g["going_pen"] = pd.to_numeric(g["penetrometer"].astype(str).str.replace(",", "."),
+                                   errors="coerce")
+    g["going_psf"] = g["going_label"].astype(str).str.upper().str.startswith("PSF").astype(
+        float)
+    g["going_level"] = [np.nan if psf else _going_level(lab, pen) for lab, pen, psf in
+                        zip(g["going_label"], g["going_pen"], g["going_psf"], strict=True)]
+    return g[cols]
+
+
+def _actor_keyed_rate(df: pd.DataFrame, hist: pd.DataFrame, keys: list[str],
+                      prefix: str) -> pd.DataFrame:
+    """Partants et victoires passés d'un acteur dans un contexte (ex. entraîneur × hippodrome),
+    lissés vers le taux a priori."""
+    d = hist.dropna(subset=keys).groupby([*keys, "race_date"]).agg(
+        r=("won", "size"), w=("won", "sum")).reset_index().sort_values("race_date")
+    g = d.groupby(keys)
+    d[f"{prefix}_runs"], d["_w"] = g["r"].cumsum(), g["w"].cumsum()
+    looked = _asof_before(df[["race_id", "num_pmu", *keys, "race_date"]].dropna(subset=keys),
+                          d[[*keys, "race_date", f"{prefix}_runs", "_w"]], keys)
+    df = _join_back(df, looked, [f"{prefix}_runs", "_w"])
+    runs = df[f"{prefix}_runs"].fillna(0.0)
+    df[f"{prefix}_runs"] = runs
+    df[f"{prefix}_win_rate"] = (df.pop("_w").fillna(0.0) + SHRINK_RUNS * PRIOR_WIN_RATE) / (
+        runs + SHRINK_RUNS)
+    return df
+
+
+def _previous_race(df: pd.DataFrame) -> pd.DataFrame:
+    """Dotation et distance des courses précédentes du cheval (dates strictement
+    antérieures) : changement de catégorie et de distance."""
+    d = df[["horse_id", "race_date", "log_prize", "distance_m"]].groupby(
+        ["horse_id", "race_date"]).agg(lp=("log_prize", "mean"),
+                                        dist=("distance_m", "last")).reset_index()
+    d = d.sort_values(["horse_id", "race_date"]).reset_index(drop=True)
+    d["_lp3"] = _rolling_by(d, "horse_id", "lp", 3, "mean")
+    d = d.rename(columns={"dist": "_prev_dist"})
+    looked = _asof_before(df[["race_id", "num_pmu", "horse_id", "race_date"]],
+                          d[["horse_id", "race_date", "_lp3", "_prev_dist"]], ["horse_id"])
+    df = _join_back(df, looked, ["_lp3", "_prev_dist"])
+    df["class_change"] = df["log_prize"] - df.pop("_lp3")
+    df["dist_change"] = df["distance_m"] - df.pop("_prev_dist")
+    return df
+
+
+def _add_v3_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Variables v3 (dates strictement antérieures, sauf le terrain annoncé du jour)."""
+    df["_rc"] = pd.factorize(df["racecourse"].astype(object))[0].astype(float)
+    df.loc[df["racecourse"].isna(), "_rc"] = np.nan
+    df["_going"] = np.where(df["going_psf"] == 1, 9.0, df["going_level"])
+    hist = df[df["has_result"]]
+    df = _keyed_record(df, hist, "_going", "apt_going")
+    df = _keyed_record(df, hist, "jockey_id", "apt_pair")
+    df = _actor_keyed_rate(df, hist, ["trainer_id", "_rc"], "trainer_course")
+    df = _previous_race(df)
+    return df.drop(columns=["_rc", "_going"])
+
+
 def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True) -> Dataset:
     races = raw["races"].copy()
     races["decision_time"] = races["scheduled_start_utc"] - DECISION_OFFSET
+    races = races.merge(_going(raw.get("going")), on="race_id", how="left")
+    for c in ("going_pen", "going_level", "going_psf"):
+        races[c] = pd.to_numeric(races[c], errors="coerce").astype("float64")
     races = races[races["scheduled_start_utc"].notna()]
 
     e = _entries_at_decision(raw["entries"], races)
@@ -416,6 +511,7 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
     df["pair_db_runs"] = df["pair_db_runs"].fillna(0.0)
 
     df = _add_v2_features(df)
+    df = _add_v3_features(df)
 
     # --- variables relatives à la course
     for c in RELATIVE_SOURCES:
