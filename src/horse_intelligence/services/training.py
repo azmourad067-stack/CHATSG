@@ -24,6 +24,7 @@ from horse_intelligence.intelligence.feature_engineering import (
     FORM_FEATURES,
     RELATIVE_FEATURES,
     V2_FEATURES,
+    V3_FEATURES,
     build_dataset,
     load_raw,
 )
@@ -52,7 +53,11 @@ NUMERIC_FEATURES_V1 = FORM_FEATURES + RELATIVE_FEATURES
 LGBM_FEATURES_V1 = NUMERIC_FEATURES_V1 + CATEGORICAL
 # Variables v2 adoptées le 14/11/2026 : l'expérience `features` (22 074 courses, 103 plis)
 # a montré un gain de log-loss de −0,0041 [IC 95 % −0,0052 ; −0,0029] sur lgbm_market
-NUMERIC_FEATURES = NUMERIC_FEATURES_V1 + V2_FEATURES
+NUMERIC_FEATURES_V2 = NUMERIC_FEATURES_V1 + V2_FEATURES
+LGBM_FEATURES_V2 = NUMERIC_FEATURES_V2 + CATEGORICAL
+# Variables v3 adoptées le 14/11/2026 : l'expérience `features3` (mêmes plis) a montré un
+# gain de log-loss significatif sur lgbm_market (voir le rapport de l'expérience)
+NUMERIC_FEATURES = NUMERIC_FEATURES_V2 + V3_FEATURES
 LGBM_FEATURES = NUMERIC_FEATURES + CATEGORICAL
 REFERENCE_MODEL = "market_calibrated"
 CANDIDATES = ("lgbm_form", "lgbm_market", "form_logit")
