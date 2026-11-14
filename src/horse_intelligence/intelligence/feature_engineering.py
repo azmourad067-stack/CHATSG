@@ -25,7 +25,7 @@ from sqlalchemy import Engine, text
 from horse_intelligence.intelligence.musique import musique_features
 
 DECISION_OFFSET = timedelta(minutes=10)
-FEATURE_SET_VERSION = "fs-2026.10.3"
+FEATURE_SET_VERSION = "fs-2026.11.1"
 
 # Lissage bayésien empirique des taux de réussite (pseudo-observations)
 SHRINK_RUNS = 20.0
@@ -51,6 +51,28 @@ RELATIVE_SOURCES = ["mus_mean_pos_6", "career_win_rate", "jockey_win_rate",
                     "trainer_win_rate", "log_earnings_per_start", "weight_carried_kg"]
 RELATIVE_FEATURES = [f"{c}_rel" for c in RELATIVE_SOURCES]
 MARKET_FEATURES = ["mkt_prob", "mkt_log_prob", "mkt_rank"]
+
+# Variables « v2 » (11/2026), calculées à chaque construction mais utilisées par les modèles
+# de production seulement si l'expérience `features` montre qu'elles améliorent la
+# prévision (critère fixé avant de voir les résultats) :
+# - vitesse (trot) : réduction kilométrique des courses passées, brute et comparée au
+#   peloton de chaque course ;
+# - ferrure / œillères : déferré des 4, changement depuis la dernière course ;
+# - aptitudes : résultats passés du cheval sur l'hippodrome, la distance, le type de départ ;
+# - forme récente des drivers / jockeys et entraîneurs sur 30 jours.
+SPEED_FEATURES = ["speed_red_mean3", "speed_red_best5", "speed_vs_field_mean3", "speed_runs",
+                  "speed_red_mean3_rel", "speed_vs_field_mean3_rel"]
+GEAR_FEATURES = ["shoes_d4", "shoes_deferre", "shoes_change", "shoes_d4_first",
+                 "blinkers_on", "blinkers_change"]
+APTITUDE_FEATURES = ["apt_course_runs", "apt_course_pct", "apt_dist_runs", "apt_dist_pct",
+                     "apt_start_runs", "apt_start_pct"]
+RECENT_FEATURES = ["jockey_runs_30d", "jockey_win_rate_30d", "trainer_runs_30d",
+                   "trainer_win_rate_30d"]
+V2_FEATURES = SPEED_FEATURES + GEAR_FEATURES + APTITUDE_FEATURES + RECENT_FEATURES
+D4 = "DEFERRE_ANTERIEURS_POSTERIEURS"
+APT_SHRINK = 3.0
+RECENT_DAYS = 30
+RECENT_SHRINK = 5.0
 
 
 @dataclass
@@ -80,14 +102,17 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
     races = _read(engine, """
         SELECT r.race_id, r.race_date, r.reunion_num, r.course_num, r.discipline,
                r.distance_m, r.prize_eur, r.declared_runners, r.scheduled_start_utc,
-               r.result_final, r.country, rc.code AS racecourse
+               r.result_final, r.country, rc.code AS racecourse,
+               CASE WHEN LOWER(r.conditions_text) LIKE '%autostart%' THEN 1 ELSE 0 END
+                   AS autostart
         FROM races r LEFT JOIN racecourses rc ON rc.racecourse_id = r.racecourse_id
         WHERE r.race_date <= :until""", until=until)
     entries = _read(engine, """
         SELECT e.* FROM race_entries e JOIN races r ON r.race_id = e.race_id
         WHERE r.race_date <= :until""", until=until)
     results = _read(engine, """
-        SELECT res.race_id, res.num_pmu, res.finish_position, res.incident
+        SELECT res.race_id, res.num_pmu, res.finish_position, res.incident,
+               res.reduction_km_s
         FROM race_results res JOIN races r ON r.race_id = res.race_id
         WHERE r.race_date <= :until""", until=until)
     odds = _read(engine, """
@@ -99,7 +124,7 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
                         (entries, ["age", "draw", "weight_kg", "weight_carried_kg",
                                    "handicap_distance_m", "career_starts", "career_wins",
                                    "career_places", "career_earnings"]),
-                        (results, ["finish_position"]), (odds, ["odds"])):
+                        (results, ["finish_position", "reduction_km_s"]), (odds, ["odds"])):
         for c in cols:  # une colonne entièrement vide arrive en type objet
             frame[c] = pd.to_numeric(frame[c], errors="coerce").astype("float64")
     races["race_date"] = pd.to_datetime(races["race_date"]).dt.date
@@ -198,6 +223,133 @@ def _horse_history(hist: pd.DataFrame) -> pd.DataFrame:
               "horse_last_jockey"]]
 
 
+def _rolling_by(d: pd.DataFrame, key: str, col: str, window: int, how: str) -> pd.Series:
+    r = d.groupby(key)[col].rolling(window, min_periods=1)
+    out = r.mean() if how == "mean" else r.min()
+    return out.reset_index(level=0, drop=True)
+
+
+def _join_back(df: pd.DataFrame, looked: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Rattache à `df` des colonnes calculées sur une copie réordonnée (clé de partant)."""
+    return df.drop(columns=[c for c in cols if c in df.columns]).merge(
+        looked[["race_id", "num_pmu", *cols]], on=["race_id", "num_pmu"], how="left")
+
+
+def _speed(df: pd.DataFrame, hist: pd.DataFrame) -> pd.DataFrame:
+    """Vitesse en trot : réduction kilométrique (s/km, plus petit = plus rapide) des courses
+    passées, brute et relative à la médiane des arrivants de chaque course."""
+    t = hist[hist["discipline"].astype(str).str.startswith("trot")
+             & hist["reduction_km_s"].notna()]
+    t = t.assign(rvf=t["reduction_km_s"]
+                 - t.groupby("race_id")["reduction_km_s"].transform("median"))
+    d = t.groupby(["horse_id", "race_date"]).agg(
+        red=("reduction_km_s", "min"), rvf=("rvf", "min")).reset_index()
+    d = d.sort_values(["horse_id", "race_date"]).reset_index(drop=True)
+    d["speed_red_mean3"] = _rolling_by(d, "horse_id", "red", 3, "mean")
+    d["speed_red_best5"] = _rolling_by(d, "horse_id", "red", 5, "min")
+    d["speed_vs_field_mean3"] = _rolling_by(d, "horse_id", "rvf", 3, "mean")
+    d["speed_runs"] = d.groupby("horse_id").cumcount() + 1.0
+    cols = ["speed_red_mean3", "speed_red_best5", "speed_vs_field_mean3", "speed_runs"]
+    looked = _asof_before(df[["race_id", "num_pmu", "horse_id", "race_date"]],
+                          d[["horse_id", "race_date", *cols]], ["horse_id"])
+    df = _join_back(df, looked, cols)
+    trot = df["discipline"].astype(str).str.startswith("trot")
+    df["speed_runs"] = df["speed_runs"].where(~trot, df["speed_runs"].fillna(0.0))
+    for c in ("speed_red_mean3", "speed_vs_field_mean3"):
+        df[f"{c}_rel"] = df[c] - df.groupby("race_id")[c].transform("mean")
+    return df
+
+
+def _gear(df: pd.DataFrame) -> pd.DataFrame:
+    """Ferrure et œillères du jour, et changement depuis la dernière course connue."""
+    shoes = df["shoes"].astype(object).where(df["shoes"].notna(), "FERRE").astype(str)
+    blink = df["blinkers"].astype(object).where(df["blinkers"].notna(), "SANS").astype(str)
+    trot = df["discipline"].astype(str).str.startswith("trot")
+    prev = pd.DataFrame({"race_id": df["race_id"], "num_pmu": df["num_pmu"],
+                         "horse_id": df["horse_id"], "race_date": df["race_date"],
+                         "prev_shoes": shoes, "prev_blinkers": blink})
+    last = prev.sort_values(["horse_id", "race_date", "race_id"]).groupby(
+        ["horse_id", "race_date"])[["prev_shoes", "prev_blinkers"]].last().reset_index()
+    looked = _asof_before(prev[["race_id", "num_pmu", "horse_id", "race_date"]], last,
+                          ["horse_id"])
+    df = _join_back(df, looked, ["prev_shoes", "prev_blinkers"])
+    ps, pb = df.pop("prev_shoes"), df.pop("prev_blinkers")
+    d4 = df["shoes"].astype(str).eq(D4)
+    deferre = df["shoes"].astype(str).str.contains("DEFERR", na=False)
+    cur_shoes = df["shoes"].astype(object).where(df["shoes"].notna(), "FERRE").astype(str)
+    cur_blink = df["blinkers"].astype(object).where(df["blinkers"].notna(), "SANS").astype(str)
+    nan = np.nan
+    df["shoes_d4"] = np.where(trot, d4.astype(float), nan)
+    df["shoes_deferre"] = np.where(trot, deferre.astype(float), nan)
+    df["shoes_change"] = np.where(trot & ps.notna(), (cur_shoes != ps).astype(float), nan)
+    df["shoes_d4_first"] = np.where(trot & ps.notna(), (d4 & ps.ne(D4)).astype(float), nan)
+    df["blinkers_on"] = (cur_blink != "SANS").astype(float)
+    df["blinkers_change"] = np.where(pb.notna(), (cur_blink != pb).astype(float), nan)
+    return df
+
+
+def _keyed_record(df: pd.DataFrame, hist: pd.DataFrame, key: str, prefix: str) -> pd.DataFrame:
+    """Nombre de courses passées du cheval avec la même valeur de `key` et rang d'arrivée
+    moyen (percentile, 0 = vainqueur) lissé vers 0,5."""
+    h = hist.dropna(subset=[key])
+    d = h.groupby(["horse_id", key, "race_date"]).agg(
+        r=("finish_pct", "size"), s=("finish_pct", "sum")).reset_index()
+    d = d.sort_values("race_date")
+    g = d.groupby(["horse_id", key])
+    d[f"{prefix}_runs"], d["_s"] = g["r"].cumsum(), g["s"].cumsum()
+    looked = _asof_before(df[["race_id", "num_pmu", "horse_id", key, "race_date"]].dropna(
+        subset=[key]), d[["horse_id", key, "race_date", f"{prefix}_runs", "_s"]],
+        ["horse_id", key])
+    df = _join_back(df, looked, [f"{prefix}_runs", "_s"])
+    runs = df[f"{prefix}_runs"].fillna(0.0)
+    df[f"{prefix}_runs"] = runs.where(df[key].notna())
+    df[f"{prefix}_pct"] = ((df.pop("_s").fillna(0.0) + 0.5 * APT_SHRINK)
+                           / (runs + APT_SHRINK)).where(df[key].notna())
+    return df
+
+
+def _recent_form(df: pd.DataFrame, hist: pd.DataFrame, key: str, prefix: str) -> pd.DataFrame:
+    """Montes / partants et victoires sur les RECENT_DAYS jours précédant la course
+    (veille comprise, jour même exclu)."""
+    d = hist.dropna(subset=[key]).groupby([key, "race_date"]).agg(
+        r=("won", "size"), w=("won", "sum")).reset_index().sort_values("race_date")
+    g = d.groupby(key)
+    d["_cr"], d["_cw"] = g["r"].cumsum(), g["w"].cumsum()
+    base = df[["race_id", "num_pmu", key, "race_date"]].dropna(subset=[key])
+    now = _asof_before(base, d[[key, "race_date", "_cr", "_cw"]], [key])
+    past = base.assign(race_date=pd.to_datetime(base["race_date"])
+                       - pd.Timedelta(days=RECENT_DAYS))
+    past["race_date"] = past["race_date"].dt.date
+    then = _asof_before(past, d[[key, "race_date", "_cr", "_cw"]], [key]).rename(
+        columns={"_cr": "_cr0", "_cw": "_cw0"})
+    looked = now[["race_id", "num_pmu", "_cr", "_cw"]].merge(
+        then[["race_id", "num_pmu", "_cr0", "_cw0"]], on=["race_id", "num_pmu"])
+    looked[f"{prefix}_runs_30d"] = looked["_cr"].fillna(0) - looked["_cr0"].fillna(0)
+    wins = looked["_cw"].fillna(0) - looked["_cw0"].fillna(0)
+    looked[f"{prefix}_win_rate_30d"] = (wins + RECENT_SHRINK * PRIOR_WIN_RATE) / (
+        looked[f"{prefix}_runs_30d"] + RECENT_SHRINK)
+    return _join_back(df, looked, [f"{prefix}_runs_30d", f"{prefix}_win_rate_30d"])
+
+
+def _add_v2_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Variables v2, toutes calculées sur des dates STRICTEMENT antérieures (sauf ferrure et
+    œillères du jour, champs déclaratifs de l'engagement)."""
+    trot = df["discipline"].astype(str).str.startswith("trot")
+    df["_rc"] = pd.factorize(df["racecourse"].astype(object))[0].astype(float)
+    df.loc[df["racecourse"].isna(), "_rc"] = np.nan
+    disc_code = pd.factorize(df["discipline"].astype(object))[0]
+    df["_dist"] = disc_code * 100.0 + np.round(df["distance_m"] / 400.0)
+    df["_start"] = np.where(trot, df["autostart"].astype(float), np.nan)
+    hist = df[df["has_result"]]
+    df = _speed(df, hist)
+    df = _gear(df)
+    for key, prefix in (("_rc", "apt_course"), ("_dist", "apt_dist"), ("_start", "apt_start")):
+        df = _keyed_record(df, hist, key, prefix)
+    for key, prefix in (("jockey_id", "jockey"), ("trainer_id", "trainer")):
+        df = _recent_form(df, hist, key, prefix)
+    return df.drop(columns=["_rc", "_dist", "_start"])
+
+
 def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True) -> Dataset:
     races = raw["races"].copy()
     races["decision_time"] = races["scheduled_start_utc"] - DECISION_OFFSET
@@ -262,6 +414,8 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
     df = _asof_before(df, pair[["horse_id", "jockey_id", "race_date", "pair_db_runs"]],
                       ["horse_id", "jockey_id"]).drop(columns="_hist_date")
     df["pair_db_runs"] = df["pair_db_runs"].fillna(0.0)
+
+    df = _add_v2_features(df)
 
     # --- variables relatives à la course
     for c in RELATIVE_SOURCES:

@@ -307,3 +307,86 @@ def run_bankroll(engine: Engine, model_col: str = INCUMBENT, rule_value: str = "
                          for y, r in by_year.iterrows()},
         "scenarios": run_scenarios(profits, per_year, n_sims),
     }
+
+
+FEATURES_PAIRS = (("lgbm_market", "lgbm_market_v2"), ("lgbm_form", "lgbm_form_v2"))
+
+
+def features_runners(importances: dict[str, pd.Series]) -> dict[str, ModelRunner]:
+    """Modèles avec les variables v2 (vitesse, ferrure, aptitudes, forme récente) en plus.
+    Même protocole que la production ; l'importance des variables du dernier pli est gardée."""
+    from horse_intelligence.intelligence.feature_engineering import V2_FEATURES
+
+    feats = [*LGBM_FEATURES, *V2_FEATURES]
+
+    def lgbm_market_v2(base: pd.DataFrame, calib: pd.DataFrame,
+                       test: pd.DataFrame) -> FloatArray:
+        m = LgbmRaceModel(feats, CATEGORICAL, with_market=True)
+        m.fit(base, _with_market(calib))
+        importances["lgbm_market_v2"] = m.feature_importance()
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    def lgbm_form_v2(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        m = LgbmRaceModel(feats, CATEGORICAL).fit(base, calib)
+        importances["lgbm_form_v2"] = m.feature_importance()
+        return m.predict(test)
+
+    return {"lgbm_market_v2": lgbm_market_v2, "lgbm_form_v2": lgbm_form_v2}
+
+
+def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                            calib_days: int = 7) -> dict[str, Any]:
+    """Les variables v2 améliorent-elles la prévision ? Critère fixé AVANT de voir les
+    résultats : `lgbm_market_v2` doit battre `lgbm_market` en log-loss, IC 95 % < 0.
+    Puis, sur les prédictions hors échantillon : sélection / test des règles de mise
+    (mêmes grilles que la validation) et stratégies par rang."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.betting_simulator import select_then_test
+    from horse_intelligence.evaluation.rank_strategies import (
+        rank_strategy_table,
+        robust_winners,
+    )
+
+    t0 = time.perf_counter()
+    raw = load_raw(engine)
+    ds = build_dataset(raw)
+    if not audit_source_aggregates(ds.frame).passed:
+        ds = build_dataset(raw, use_source_aggregates=False)
+    frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
+    base_runners = model_runners()
+    importances: dict[str, pd.Series] = {}
+    runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL],
+               "lgbm_market": base_runners["lgbm_market"],
+               "lgbm_form": base_runners["lgbm_form"], **features_runners(importances)}
+    wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
+    evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
+    names = list(runners)
+    mkt = _with_market(evald)
+    mkt = mkt[mkt.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)]
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    paired = {new: paired_bootstrap(mkt, mkt[new], mkt[old]) for old, new in FEATURES_PAIRS}
+    rank_rows = rank_strategy_table(mkt, payouts, "lgbm_market_v2")
+    dates = sorted(frame["race_date"].unique())
+    return {
+        "period": [str(dates[0]), str(dates[-1])], "n_races": int(mkt["race_id"].nunique()),
+        "n_folds": len(wf.folds), "seconds": round(time.perf_counter() - t0, 1),
+        "metrics": {n: compute_metrics(mkt, mkt[n]).as_dict() for n in names},
+        "vs_reference": {n: paired_bootstrap(mkt, mkt[n], mkt[REFERENCE_MODEL])
+                         for n in names if n != REFERENCE_MODEL},
+        "v2_vs_v1": paired,
+        "success": paired["lgbm_market_v2"]["ci_high"] < 0,
+        # le modèle « marché » réutilise le même score LightGBM que le modèle « forme »
+        # (puis le combine aux cotes) : une seule liste d'importances suffit
+        "importance": {k: v.sort_values(ascending=False).head(25).round(1).to_dict()
+                       for k, v in importances.items() if k == "lgbm_form_v2"},
+        "betting": {m: asdict(select_then_test(mkt, payouts, m))
+                    for m in ("lgbm_market", "lgbm_market_v2")},
+        "ranks_robust": robust_winners(rank_rows),
+        "ranks_best_test": sorted([r for r in rank_rows if r["test"]["n_bets"] > 0],
+                                  key=lambda r: -r["test"]["roi"])[:8],
+        "errors": wf.errors,
+    }
