@@ -6,6 +6,7 @@
 #   segments : analyse par discipline, partants, distance, réunion, groupe et rang
 #              (tableaux complets en CSV dans l'artefact « analyses »)
 #   frozen : validation des règles figées le 10/11/2026 sur [start, end]
+#   features : variables v2 (vitesse, ferrure, aptitudes, forme récente) vs modèle actuel
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
 
@@ -15,7 +16,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -71,6 +72,9 @@ jobs:
           else
             python scripts/backtest_ranks.py "${args[@]}"
           fi
+      - name: Variables v2 vs modèle actuel (walk-forward)
+        if: env.EXPERIMENT == 'features'
+        run: python scripts/experiment_features.py
       - name: Simulation de bankroll (Monte-Carlo)
         if: env.EXPERIMENT == 'bankroll'
         run: python scripts/simulate_bankroll.py
