@@ -13,6 +13,7 @@ from horse_intelligence.intelligence.feature_engineering import (
     DECISION_OFFSET,
     FORM_FEATURES,
     V2_FEATURES,
+    V3_FEATURES,
     build_dataset,
 )
 from horse_intelligence.intelligence.leakage_audit import audit_source_aggregates
@@ -20,7 +21,7 @@ from horse_intelligence.intelligence.leakage_audit import audit_source_aggregate
 SUSPICIOUS_AUC = 0.90
 HISTORY_COLS = ["jockey_win_rate", "jockey_db_runs", "trainer_win_rate", "trainer_db_runs",
                 "horse_db_runs", "horse_days_since_db", "horse_db_mean_pct", "pair_db_runs",
-                "rider_change", *V2_FEATURES]
+                "rider_change", *V2_FEATURES, *V3_FEATURES]
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ def run_leakage_checks(raw: dict[str, pd.DataFrame], seed: int = 0) -> list[dict
     # 3. aucune variable ne prédit « trop bien » le résultat à elle seule
     lab = f[f["won"].notna()]
     worst = ("", 0.5)
-    for c in (*FORM_FEATURES, *V2_FEATURES):
+    for c in (*FORM_FEATURES, *V2_FEATURES, *V3_FEATURES):
         s = pd.to_numeric(lab[c], errors="coerce")
         ok_rows = s.notna()
         if ok_rows.sum() < 100:

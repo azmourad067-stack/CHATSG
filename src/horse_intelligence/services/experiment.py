@@ -310,45 +310,41 @@ def run_bankroll(engine: Engine, model_col: str = INCUMBENT, rule_value: str = "
     }
 
 
-FEATURES_PAIRS = (("lgbm_market", "lgbm_market_v2"), ("lgbm_form", "lgbm_form_v2"))
+def features_runners(importances: dict[str, pd.Series], old_feats: list[str] | None = None,
+                     new_feats: list[str] | None = None,
+                     tag: str = "v2") -> dict[str, ModelRunner]:
+    """Modèles avec l'ancien jeu de variables (`lgbm_market`, `lgbm_form`) et le nouveau
+    (`lgbm_market_<tag>`, `lgbm_form_<tag>`). Même protocole que la production ;
+    importance des variables du dernier pli. Par défaut : v1 contre v1 + v2."""
+    old = old_feats if old_feats is not None else LGBM_FEATURES_V1
+    new = new_feats if new_feats is not None else LGBM_FEATURES
 
+    def market(feats: list[str]) -> ModelRunner:
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            m = LgbmRaceModel(feats, CATEGORICAL, with_market=True)
+            m.fit(base, _with_market(calib))
+            sub = _with_market(test)
+            return _masked(test, sub, m.predict(sub))
+        return run
 
-def features_runners(importances: dict[str, pd.Series]) -> dict[str, ModelRunner]:
-    """Modèles d'origine (v1) et avec les variables v2 (vitesse, ferrure, aptitudes, forme
-    récente). Même protocole que la production ; importance des variables du dernier pli."""
-    feats = LGBM_FEATURES  # production depuis le 14/11/2026 : v1 + v2
+    def form(feats: list[str], key: str | None) -> ModelRunner:
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            m = LgbmRaceModel(feats, CATEGORICAL).fit(base, calib)
+            if key is not None:
+                importances[key] = m.feature_importance()
+            return m.predict(test)
+        return run
 
-    def lgbm_market_v1(base: pd.DataFrame, calib: pd.DataFrame,
-                       test: pd.DataFrame) -> FloatArray:
-        m = LgbmRaceModel(LGBM_FEATURES_V1, CATEGORICAL, with_market=True)
-        m.fit(base, _with_market(calib))
-        sub = _with_market(test)
-        return _masked(test, sub, m.predict(sub))
-
-    def lgbm_form_v1(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
-        return LgbmRaceModel(LGBM_FEATURES_V1, CATEGORICAL).fit(base, calib).predict(test)
-
-    def lgbm_market_v2(base: pd.DataFrame, calib: pd.DataFrame,
-                       test: pd.DataFrame) -> FloatArray:
-        m = LgbmRaceModel(feats, CATEGORICAL, with_market=True)
-        m.fit(base, _with_market(calib))
-        importances["lgbm_market_v2"] = m.feature_importance()
-        sub = _with_market(test)
-        return _masked(test, sub, m.predict(sub))
-
-    def lgbm_form_v2(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
-        m = LgbmRaceModel(feats, CATEGORICAL).fit(base, calib)
-        importances["lgbm_form_v2"] = m.feature_importance()
-        return m.predict(test)
-
-    return {"lgbm_market": lgbm_market_v1, "lgbm_form": lgbm_form_v1,
-            "lgbm_market_v2": lgbm_market_v2, "lgbm_form_v2": lgbm_form_v2}
+    return {"lgbm_market": market(old), "lgbm_form": form(old, None),
+            f"lgbm_market_{tag}": market(new),
+            f"lgbm_form_{tag}": form(new, f"lgbm_form_{tag}")}
 
 
 def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
-                            calib_days: int = 7) -> dict[str, Any]:
-    """Les variables v2 améliorent-elles la prévision ? Critère fixé AVANT de voir les
-    résultats : `lgbm_market_v2` doit battre `lgbm_market` en log-loss, IC 95 % < 0.
+                            calib_days: int = 7, stage: str = "v2") -> dict[str, Any]:
+    """Un nouveau jeu de variables améliore-t-il la prévision ? `stage="v2"` : variables
+    d'origine contre v1 + v2 ; `stage="v3"` : production (v1 + v2) contre + v3. Critère fixé
+    AVANT de voir les résultats : `lgbm_market_<stage>` bat `lgbm_market`, IC 95 % < 0.
     Puis, sur les prédictions hors échantillon : sélection / test des règles de mise
     (mêmes grilles que la validation) et stratégies par rang."""
     from sqlalchemy import text
@@ -367,7 +363,15 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
     frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
     base_runners = model_runners()
     importances: dict[str, pd.Series] = {}
-    runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL], **features_runners(importances)}
+    from horse_intelligence.intelligence.feature_engineering import V3_FEATURES
+
+    # v2 : variables d'origine contre v1 + v2 ; v3 : production (v1 + v2) contre + v3
+    old_feats, new_feats = ((LGBM_FEATURES_V1, LGBM_FEATURES) if stage == "v2" else
+                            (LGBM_FEATURES, [*LGBM_FEATURES, *V3_FEATURES]))
+    new_m, new_f = f"lgbm_market_{stage}", f"lgbm_form_{stage}"
+    pairs = (("lgbm_market", new_m), ("lgbm_form", new_f))
+    runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL],
+               **features_runners(importances, old_feats, new_feats, stage)}
     wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
     evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
     names = list(runners)
@@ -376,12 +380,12 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
     with engine.connect() as conn:
         payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
                                    "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
-    paired = {new: paired_bootstrap(mkt, mkt[new], mkt[old]) for old, new in FEATURES_PAIRS}
-    rank_rows = rank_strategy_table(mkt, payouts, "lgbm_market_v2")
+    paired = {new: paired_bootstrap(mkt, mkt[new], mkt[old]) for old, new in pairs}
+    rank_rows = rank_strategy_table(mkt, payouts, new_m)
     with engine.connect() as conn:
         races = pd.read_sql(text("SELECT race_id, label, conditions_text FROM races"), conn)
     frozen = frozen_rule_by_period(mkt.merge(races, on="race_id", how="left"), payouts,
-                                   ("lgbm_market", "lgbm_market_v2"))
+                                   ("lgbm_market", new_m))
     dates = sorted(frame["race_date"].unique())
     return {
         "period": [str(dates[0]), str(dates[-1])], "n_races": int(mkt["race_id"].nunique()),
@@ -389,14 +393,15 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
         "metrics": {n: compute_metrics(mkt, mkt[n]).as_dict() for n in names},
         "vs_reference": {n: paired_bootstrap(mkt, mkt[n], mkt[REFERENCE_MODEL])
                          for n in names if n != REFERENCE_MODEL},
-        "v2_vs_v1": paired,
-        "success": paired["lgbm_market_v2"]["ci_high"] < 0,
+        "stage": stage, "challenger": new_m,
+        "new_vs_old": paired,
+        "success": paired[new_m]["ci_high"] < 0,
         # le modèle « marché » réutilise le même score LightGBM que le modèle « forme »
         # (puis le combine aux cotes) : une seule liste d'importances suffit
         "importance": {k: v.sort_values(ascending=False).head(25).round(1).to_dict()
-                       for k, v in importances.items() if k == "lgbm_form_v2"},
+                       for k, v in importances.items() if k == new_f},
         "betting": {m: asdict(select_then_test(mkt, payouts, m))
-                    for m in ("lgbm_market", "lgbm_market_v2")},
+                    for m in ("lgbm_market", new_m)},
         "ranks_robust": robust_winners(rank_rows),
         "frozen_trot_g": frozen,
         "ranks_best_test": sorted([r for r in rank_rows if r["test"]["n_bets"] > 0],

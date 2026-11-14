@@ -1,10 +1,14 @@
 """Expérience « variables v2 » : vitesse, ferrure, aptitudes, forme récente.
 
-Usage : python scripts/experiment_features.py
-Critère fixé AVANT de voir les résultats : lgbm_market_v2 bat lgbm_market en log-loss,
+Usage : python scripts/experiment_features.py [--stage v2|v3]
+  v2 : variables d'origine contre v1 + v2 ; v3 : production (v1 + v2) contre + v3
+  (terrain, changement de catégorie et de distance, couple cheval / driver, entraîneur sur
+  l'hippodrome).
+Critère fixé AVANT de voir les résultats : lgbm_market_<stage> bat lgbm_market en log-loss,
 IC 95 % entièrement négatif. Lecture seule : aucun modèle n'est enregistré.
 """
 
+import argparse
 import sys
 
 import _bootstrap  # noqa: F401
@@ -18,8 +22,11 @@ def _pct(x: float) -> str:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--stage", choices=["v2", "v3"], default="v2")
+    args = parser.parse_args()
     configure_logging()
-    rep = run_features_experiment(build_context().repo.engine)
+    rep = run_features_experiment(build_context().repo.engine, stage=args.stage)
     print(f"Période {rep['period'][0]} → {rep['period'][1]} : {rep['n_races']} courses "
           f"comparées, {rep['n_folds']} plis, {rep['seconds']:.0f} s")
     print(f"\n{'modèle':16s} {'logloss':>8s} {'brier':>7s} {'top1':>6s} {'top3':>6s} "
@@ -30,11 +37,12 @@ def main() -> int:
     print("\nDifférence de log-loss vs marché calibré (négatif = meilleur), IC 95 % :")
     for name, d in rep["vs_reference"].items():
         print(f"  {name:16s} {d['mean_diff']:+.4f}  [{d['ci_low']:+.4f} ; {d['ci_high']:+.4f}]")
-    print("\nApport des variables v2 (v2 − v1, négatif = meilleur), IC 95 % :")
-    for name, d in rep["v2_vs_v1"].items():
+    print(f"\nApport des nouvelles variables ({rep['stage']} − actuel, négatif = meilleur), "
+          "IC 95 % :")
+    for name, d in rep["new_vs_old"].items():
         print(f"  {name:16s} {d['mean_diff']:+.4f}  [{d['ci_low']:+.4f} ; {d['ci_high']:+.4f}]")
     for imp in rep["importance"].values():
-        print("\nVariables les plus utilisées (score LightGBM v2, dernier pli) :")
+        print("\nVariables les plus utilisées (nouveau score LightGBM, dernier pli) :")
         print("  " + ", ".join(f"{k} {v:.0f}" for k, v in imp.items()))
     print("\nRègles de mise (choisies sur la 1re moitié, appliquées à la 2nde) :")
     for name, b in rep["betting"].items():
@@ -45,7 +53,7 @@ def main() -> int:
                f"{_pct(t['roi_ci'][1])}])") if t else "—"
         print(f"  [{name}] {rule} : sélection {sel} → test {tst}")
         print(f"     {b['message']}")
-    print(f"\nStratégies par rang (modèle v2) robustes : {len(rep['ranks_robust'])}")
+    print(f"\nStratégies par rang (nouveau modèle) robustes : {len(rep['ranks_robust'])}")
     for r in rep["ranks_best_test"]:
         s, t = r["selection"], r["test"]
         print(f"  {r['rule']:34s} sélection {_pct(s['roi'])} ({s['n_bets']}) | test "
@@ -61,11 +69,12 @@ def main() -> int:
         print(f"  {model:15s} " + " | ".join(cells))
     for name, errs in rep["errors"].items():
         print(f"✖ {name}: {errs[:2]}")
-    verdict = ("SUCCÈS : les variables v2 améliorent significativement le modèle"
+    verdict = (f"SUCCÈS : les variables {rep['stage']} améliorent significativement le modèle"
                if rep["success"] else
-               "ÉCHEC : les variables v2 n'améliorent pas significativement le modèle")
-    print(f"\nCritère fixé à l'avance (lgbm_market_v2 meilleur que lgbm_market, IC 95 % < 0)"
-          f" → {verdict}")
+               f"ÉCHEC : les variables {rep['stage']} n'améliorent pas significativement "
+               "le modèle")
+    print(f"\nCritère fixé à l'avance ({rep['challenger']} meilleur que lgbm_market, "
+          f"IC 95 % < 0) → {verdict}")
     return 0
 
 
