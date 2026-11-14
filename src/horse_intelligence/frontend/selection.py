@@ -1,9 +1,11 @@
 """Sélection du jour : le 3e cheval du modèle dans chaque course de trot G.
 
 Règle « 3e du modèle, simple gagnant, trot G » : la seule des règles figées le 10/11/2026
-restée positive sur l'année de validation (+6,0 %, IC 95 % [−24 % ; +38 %]). Elle n'est
-PAS validée : son intérêt réel est indiscernable du hasard. La page l'applique telle
-qu'elle a été testée, sans filtre supplémentaire, pour un suivi à petites mises.
+restée positive sur l'année de validation avec le modèle d'origine (+6,0 %, IC 95 %
+[−24 % ; +38 %]). Elle n'est PAS validée : réentraîné, le même modèle donne −1,2 % sur
+cette année, et le modèle actuel (variables v2, 14/11/2026) −3,5 % sur deux ans
+(851 paris, IC [−21 % ; +15 %]). La page l'applique telle qu'elle a été définie, pour un
+suivi fictif ou à petites mises fixes.
 """
 
 from __future__ import annotations
@@ -66,8 +68,9 @@ def _paris_time(value: object) -> str:
 def render() -> None:
     st.title("Sélection du jour")
     st.warning("Règle NON validée : « 3e du modèle, simple gagnant, courses de trot G ». "
-               "+6 % sur l'année de validation, mais un intervalle de −24 % à +38 % : "
-               "impossible de la distinguer du hasard. Petites mises fixes uniquement.")
+               "Avec le modèle actuel, elle aurait donné −3,5 % sur deux ans (851 paris, "
+               "intervalle de −21 % à +15 %) : aucun avantage démontré. À suivre de façon "
+               "fictive, ou pour le plaisir avec de petites mises fixes.")
     repo = get_context().repo
     dates = repo.available_dates()
     if not dates:

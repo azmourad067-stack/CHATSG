@@ -33,7 +33,8 @@ from horse_intelligence.models.neural_model import NeuralRaceModel
 from horse_intelligence.models.ranking import ConditionalLogit, FloatArray
 from horse_intelligence.services.training import (
     LGBM_FEATURES,
-    NUMERIC_FEATURES,
+    LGBM_FEATURES_V1,
+    NUMERIC_FEATURES_V1,
     REFERENCE_MODEL,
     _masked,
     _with_market,
@@ -78,7 +79,7 @@ def neural_runners(refit_every_days: int = 7,
         last: date = base["race_date"].max()
         if state["model"] is None or (last - state["until"]).days >= refit_every_days:
             t0 = time.perf_counter()
-            state["model"] = NeuralRaceModel(NUMERIC_FEATURES, CATEGORICAL).fit_score(base)
+            state["model"] = NeuralRaceModel(NUMERIC_FEATURES_V1, CATEGORICAL).fit_score(base)
             state["until"] = last
             log.append({"trained_until": str(last), "epochs": state["model"].epochs_run,
                         "seconds": round(time.perf_counter() - t0, 1)})
@@ -96,7 +97,7 @@ def neural_runners(refit_every_days: int = 7,
                      test: pd.DataFrame) -> FloatArray:
         nn = score_model(base)
         cal, sub = _with_market(calib), _with_market(test)
-        lgbm = LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=True).fit(base, cal)
+        lgbm = LgbmRaceModel(LGBM_FEATURES_V1, CATEGORICAL, with_market=True).fit(base, cal)
 
         def inputs(f: pd.DataFrame) -> pd.DataFrame:
             return pd.DataFrame({"lgbm_score": lgbm.raw_score(f), "nn_score": nn.raw_score(f),
@@ -313,11 +314,19 @@ FEATURES_PAIRS = (("lgbm_market", "lgbm_market_v2"), ("lgbm_form", "lgbm_form_v2
 
 
 def features_runners(importances: dict[str, pd.Series]) -> dict[str, ModelRunner]:
-    """Modèles avec les variables v2 (vitesse, ferrure, aptitudes, forme récente) en plus.
-    Même protocole que la production ; l'importance des variables du dernier pli est gardée."""
-    from horse_intelligence.intelligence.feature_engineering import V2_FEATURES
+    """Modèles d'origine (v1) et avec les variables v2 (vitesse, ferrure, aptitudes, forme
+    récente). Même protocole que la production ; importance des variables du dernier pli."""
+    feats = LGBM_FEATURES  # production depuis le 14/11/2026 : v1 + v2
 
-    feats = [*LGBM_FEATURES, *V2_FEATURES]
+    def lgbm_market_v1(base: pd.DataFrame, calib: pd.DataFrame,
+                       test: pd.DataFrame) -> FloatArray:
+        m = LgbmRaceModel(LGBM_FEATURES_V1, CATEGORICAL, with_market=True)
+        m.fit(base, _with_market(calib))
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    def lgbm_form_v1(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        return LgbmRaceModel(LGBM_FEATURES_V1, CATEGORICAL).fit(base, calib).predict(test)
 
     def lgbm_market_v2(base: pd.DataFrame, calib: pd.DataFrame,
                        test: pd.DataFrame) -> FloatArray:
@@ -332,7 +341,8 @@ def features_runners(importances: dict[str, pd.Series]) -> dict[str, ModelRunner
         importances["lgbm_form_v2"] = m.feature_importance()
         return m.predict(test)
 
-    return {"lgbm_market_v2": lgbm_market_v2, "lgbm_form_v2": lgbm_form_v2}
+    return {"lgbm_market": lgbm_market_v1, "lgbm_form": lgbm_form_v1,
+            "lgbm_market_v2": lgbm_market_v2, "lgbm_form_v2": lgbm_form_v2}
 
 
 def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
@@ -357,9 +367,7 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
     frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
     base_runners = model_runners()
     importances: dict[str, pd.Series] = {}
-    runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL],
-               "lgbm_market": base_runners["lgbm_market"],
-               "lgbm_form": base_runners["lgbm_form"], **features_runners(importances)}
+    runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL], **features_runners(importances)}
     wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
     evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
     names = list(runners)
