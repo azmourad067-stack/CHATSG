@@ -24,11 +24,14 @@ from horse_intelligence.intelligence.feature_engineering import build_dataset, l
 from horse_intelligence.intelligence.pattern_discovery import condition_frame
 from horse_intelligence.intelligence.uncertainty import OodScorer, member_intervals, race_status
 from horse_intelligence.models.lightgbm_model import LgbmRaceModel
+from horse_intelligence.models.place_model import PlaceMarketModel
 from horse_intelligence.models.ranking import ConditionalLogit, paid_places, place_probabilities
 from horse_intelligence.models.registry import latest_model, load_artifact
 from horse_intelligence.services.discovery import validated_patterns
 
 PRIMARY_ORDER = ("lgbm_market", "lgbm_form")
+PLACE_FAMILY = "place_market"
+MODEL_FAMILIES = (*PRIMARY_ORDER, "market_calibrated", PLACE_FAMILY)
 MIN_EDGE_UNCERTAINTY = 0.02
 
 
@@ -45,6 +48,7 @@ class RacePrediction:
     in_sample: bool = False           # course incluse dans l'apprentissage du modèle
     uncertainty: str = "non évaluée"  # exploitable | incertaine | hors distribution
     uncertainty_reasons: list[str] = field(default_factory=list)
+    place_method: str = "harville"    # model (modèle placé validé) | harville
 
 
 def _quality_status(engine: Engine, race_id: int) -> tuple[str, list[dict[str, Any]]]:
@@ -72,16 +76,21 @@ class LoadedFamily:
     lgbm: LgbmRaceModel | None = None
     members: list[LgbmRaceModel] = field(default_factory=list)
     calibrator: ConditionalLogit | None = None
+    place: PlaceMarketModel | None = None
 
 
 def load_models(engine: Engine) -> dict[str, LoadedFamily]:
     out: dict[str, LoadedFamily] = {}
-    for family in (*PRIMARY_ORDER, "market_calibrated"):
-        meta = latest_model(engine, family)
+    for family in MODEL_FAMILIES:
+        # modèle placé : utilisé seulement s'il a été validé (sinon formule de Harville)
+        meta = latest_model(engine, family, ("active",) if family == PLACE_FAMILY
+                            else ("active", "candidate"))
         if meta is None:
             continue
         payload = load_artifact(engine, meta["artifact_uri"], meta["artifact_sha256"])
-        if family == "market_calibrated":
+        if family == PLACE_FAMILY:
+            out[family] = LoadedFamily(meta, payload, place=PlaceMarketModel.from_dict(payload))
+        elif family == "market_calibrated":
             out[family] = LoadedFamily(meta, payload,
                                        calibrator=ConditionalLogit.from_dict(payload["calibrator"]))
         else:
@@ -146,6 +155,8 @@ def predict_race(engine: Engine, race_id: int, frame: pd.DataFrame | None = None
     lgbm: dict[str, LgbmRaceModel] = {}
     meta_out: dict[str, dict[str, Any]] = {}
     for family, loaded in models.items():
+        if loaded.place is not None:
+            continue
         meta = loaded.meta
         meta_out[family] = {"version": meta["version"], "status": meta["status"],
                             "train_end": meta["train_end"], "model_id": meta["model_id"]}
@@ -171,7 +182,15 @@ def predict_race(engine: Engine, race_id: int, frame: pd.DataFrame | None = None
                   "form_string", "age", "sex"]].copy()
     table["p_win"] = p
     table["rank"] = pd.Series(p, index=race.index).rank(ascending=False, method="min")
-    table["p_place"] = place_probabilities(p, n_places) if n_places else np.nan
+    place_model = models[PLACE_FAMILY].place if PLACE_FAMILY in models else None
+    place_method = "harville"
+    if not n_places:
+        table["p_place"] = np.nan
+    elif place_model is not None and has_market:
+        table["p_place"] = place_model.predict(race)
+        place_method = "model"
+    else:
+        table["p_place"] = place_probabilities(p, n_places)
     for family, pr in probs.items():
         table[f"p_{family}"] = pr
     # désaccord entre modèles : écart maximal entre estimations disponibles
@@ -219,4 +238,5 @@ def predict_race(engine: Engine, race_id: int, frame: pd.DataFrame | None = None
         msg += (" Cette course fait partie de la période d'apprentissage : l'estimation "
                 "n'est pas indépendante de son résultat.")
     return RacePrediction(race_id, status, msg, table.sort_values("rank").reset_index(drop=True),
-                          meta_out, primary, n_places, has_market, in_sample, unc, reasons)
+                          meta_out, primary, n_places, has_market, in_sample, unc, reasons,
+                          place_method)

@@ -9,6 +9,7 @@
 #   features : variables v2 (vitesse, ferrure, aptitudes, forme récente) vs modèle actuel
 #   features3 : variables v3 (terrain, catégorie, distance, couple, entraîneur) vs production
 #   models : LightGBM classement par course, CatBoost, empilement vs modèle actuel
+#   place : modèle appris sur « placé » vs Harville appliqué au modèle gagnant
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
 
@@ -18,7 +19,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -85,6 +86,9 @@ jobs:
       - name: Variables v3 vs production (walk-forward)
         if: env.EXPERIMENT == 'features3'
         run: python scripts/experiment_features.py --stage v3
+      - name: Modèle placé vs Harville (walk-forward)
+        if: env.EXPERIMENT == 'place'
+        run: python scripts/experiment_place.py
       - name: Simulation de bankroll (Monte-Carlo)
         if: env.EXPERIMENT == 'bankroll'
         run: python scripts/simulate_bankroll.py

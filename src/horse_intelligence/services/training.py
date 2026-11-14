@@ -43,6 +43,12 @@ from horse_intelligence.models.baseline import (
     uniform_proba,
 )
 from horse_intelligence.models.lightgbm_model import LgbmRaceModel
+from horse_intelligence.models.place_model import (
+    PlaceMarketModel,
+    harville_place,
+    place_eval_frame,
+    place_paired_bootstrap,
+)
 from horse_intelligence.models.ranking import FloatArray
 from horse_intelligence.models.registry import register_model, save_artifact
 
@@ -60,6 +66,10 @@ LGBM_FEATURES_V2 = NUMERIC_FEATURES_V2 + CATEGORICAL
 NUMERIC_FEATURES = NUMERIC_FEATURES_V2 + V3_FEATURES
 LGBM_FEATURES = NUMERIC_FEATURES + CATEGORICAL
 REFERENCE_MODEL = "market_calibrated"
+# Probabilité de place : modèle placé (promu s'il bat Harville appliqué au modèle gagnant)
+PLACE_FAMILY = "place_market"
+PLACE_INCUMBENT = "harville_lgbm"
+FAMILIES = ("lgbm_market", "lgbm_form", REFERENCE_MODEL, PLACE_FAMILY)
 CANDIDATES = ("lgbm_form", "lgbm_market", "form_logit")
 MIN_RACES_FOR_PROMOTION = 300
 WF_REPORT_KEY = "reports/walk_forward-latest.json"
@@ -85,6 +95,7 @@ class TrainingReport:
     calibration: dict[str, list[dict[str, Any]]]
     feature_importance: dict[str, Any]
     registered: dict[str, dict[str, Any]] = field(default_factory=dict)
+    place: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     errors: dict[str, list[str]] = field(default_factory=dict)
 
@@ -128,6 +139,33 @@ def model_runners() -> dict[str, ModelRunner]:
     }
 
 
+def place_runner(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+    """P(placé) du modèle placé (courses dont tous les partants ont une cote)."""
+    m = PlaceMarketModel(LGBM_FEATURES, CATEGORICAL).fit(base, _with_market(calib))
+    sub = _with_market(test)
+    return _masked(test, sub, m.predict(sub))
+
+
+def place_comparison(evald: pd.DataFrame) -> dict[str, Any]:
+    """Log-loss « placé » hors échantillon : modèle placé contre Harville appliqué au modèle
+    gagnant (méthode précédente) et contre Harville appliqué aux cotes."""
+    if PLACE_FAMILY not in evald or "lgbm_market" not in evald:
+        return {}
+    f = _with_market(evald)
+    f = f[f.groupby("race_id")[["lgbm_market", PLACE_FAMILY]]
+          .transform(lambda s: s.notna().all()).all(axis=1)].copy()
+    f[PLACE_INCUMBENT] = harville_place(f, f["lgbm_market"])
+    f["harville_market"] = harville_place(f, f["mkt_prob"])
+    f = place_eval_frame(f, [PLACE_FAMILY, PLACE_INCUMBENT, "harville_market"])
+    if f.empty:
+        return {}
+    return {"n_races": int(f["race_id"].nunique()),
+            "vs_incumbent": place_paired_bootstrap(f, f[PLACE_FAMILY], f[PLACE_INCUMBENT]),
+            "vs_market": place_paired_bootstrap(f, f[PLACE_FAMILY], f["harville_market"]),
+            "incumbent_vs_market": place_paired_bootstrap(f, f[PLACE_INCUMBENT],
+                                                          f["harville_market"])}
+
+
 def _final_with_uncertainty(base: pd.DataFrame, cal: pd.DataFrame, with_market: bool,
                             n_members: int) -> dict[str, Any]:
     """Modèle final + ensemble bootstrap + score hors distribution + seuils de statut.
@@ -167,7 +205,8 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
     if frame.empty:
         raise ValueError("aucune course avec résultat : collectez des données d'abord")
 
-    wf = run_walk_forward(frame, model_runners(), min_train_days, test_days, calib_days)
+    wf = run_walk_forward(frame, {**model_runners(), PLACE_FAMILY: place_runner},
+                          min_train_days, test_days, calib_days)
     if wf.predictions.empty:
         raise ValueError(f"historique insuffisant : il faut plus de {min_train_days} jours "
                          "de courses avec résultats")
@@ -196,6 +235,12 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
     }
     finals[REFERENCE_MODEL] = {"calibrator": CalibratedMarket().fit(_with_market(frame))
                                .model.to_dict()}
+    place_cmp = place_comparison(evald)
+    if _with_market(cal).empty:
+        warnings.append("Pas de cotes sur la période de calibration : modèle placé non appris.")
+    else:
+        finals[PLACE_FAMILY] = PlaceMarketModel(LGBM_FEATURES, CATEGORICAL).fit(
+            base, _with_market(cal)).to_dict()
     importance = LgbmRaceModel.from_dict(finals["lgbm_form"]).feature_importance()
 
     n_market_races = int(mkt["race_id"].nunique())
@@ -214,15 +259,19 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
         metrics_all_races=all_races, metrics_market_races=market_races, vs_reference=vs_ref,
         calibration=calib, feature_importance={str(k): float(v) for k, v in
                             importance.head(20).round(2).items()},
-        warnings=warnings, errors=wf.errors,
+        warnings=warnings, errors=wf.errors, place=place_cmp,
     )
 
     if register:
         version = _version()
         for family, payload in finals.items():
-            cmp = vs_ref.get(family)
+            if family == PLACE_FAMILY:
+                cmp = place_cmp.get("vs_incumbent")
+                n_cmp = int(place_cmp.get("n_races", 0))
+            else:
+                cmp, n_cmp = vs_ref.get(family), n_market_races
             promote = family == REFERENCE_MODEL or bool(
-                cmp and n_market_races >= MIN_RACES_FOR_PROMOTION and cmp["ci_high"] < 0)
+                cmp and n_cmp >= MIN_RACES_FOR_PROMOTION and cmp["ci_high"] < 0)
             payload = {**payload, "family": family, "version": version,
                        "feature_set": FEATURE_SET_VERSION,
                        "use_source_aggregates": audit.passed}
@@ -235,7 +284,9 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
             if cmp:
                 metric_rows.append({"eval_protocol": "walk_forward", "period_start": dates[0],
                                     "period_end": dates[-1], "segment": "courses_avec_marche",
-                                    "metric": f"log_loss_diff_vs_{REFERENCE_MODEL}",
+                                    "metric": (f"place_log_loss_diff_vs_{PLACE_INCUMBENT}"
+                                               if family == PLACE_FAMILY else
+                                               f"log_loss_diff_vs_{REFERENCE_MODEL}"),
                                     "value": cmp["mean_diff"], "ci_low": cmp["ci_low"],
                                     "ci_high": cmp["ci_high"], "n_races": cmp["n_races"]})
             model_id = register_model(engine, family, version, uri, sha, dates[0], dates[-1],
@@ -250,7 +301,7 @@ def train_and_evaluate(engine: Engine, min_train_days: int = 21, test_days: int 
     blob_store.put_json(engine, f"reports/walk_forward-{_version()}.json", body)
     blob_store.put_json(engine, WF_REPORT_KEY, body)
     # prédictions hors échantillon : seule base légitime pour simuler des paris (phase 5)
-    keep = [*OOS_COLUMNS, *names]
+    keep = [*OOS_COLUMNS, *names, PLACE_FAMILY]
     oos = evald[[c for c in keep if c in evald.columns]].copy()
     for c in ("discipline", "racecourse"):
         oos[c] = oos[c].astype(object)
@@ -269,9 +320,9 @@ def _prune_artifacts(engine: Engine) -> None:
     from horse_intelligence.models.registry import latest_model
 
     active = {m["artifact_uri"].removeprefix(blob_store.URI_PREFIX)
-              for f in ("lgbm_market", "lgbm_form", REFERENCE_MODEL)
+              for f in FAMILIES
               if (m := latest_model(engine, f, ("active",))) is not None}
-    for family in ("lgbm_market", "lgbm_form", REFERENCE_MODEL):
+    for family in FAMILIES:
         blob_store.prune(engine, f"models/{family}-", KEEP_MODEL_VERSIONS, active)
     for kind in ("walk_forward-", "lab-", "validation-"):
         blob_store.prune(engine, f"reports/{kind}", KEEP_REPORTS)
