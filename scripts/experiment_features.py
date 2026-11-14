@@ -51,6 +51,14 @@ def main() -> int:
         print(f"  {r['rule']:34s} sélection {_pct(s['roi'])} ({s['n_bets']}) | test "
               f"{_pct(t['roi'])} ({t['n_bets']}) IC [{_pct(t['roi_ci'][0])} ; "
               f"{_pct(t['roi_ci'][1])}]")
+    print("\nRègle figée « 3e du modèle, gagnant, trot G » selon le modèle :")
+    for model, periods in rep["frozen_trot_g"].items():
+        cells = []
+        for name, r in periods.items():
+            lo, hi = r["roi_ci"]
+            cells.append(f"{name} {_pct(r['roi'])} ({r['n_bets']} paris, "
+                         f"IC [{_pct(lo)} ; {_pct(hi)}])")
+        print(f"  {model:15s} " + " | ".join(cells))
     for name, errs in rep["errors"].items():
         print(f"✖ {name}: {errs[:2]}")
     verdict = ("SUCCÈS : les variables v2 améliorent significativement le modèle"
