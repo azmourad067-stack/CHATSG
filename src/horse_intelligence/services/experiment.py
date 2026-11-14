@@ -34,6 +34,7 @@ from horse_intelligence.models.ranking import ConditionalLogit, FloatArray
 from horse_intelligence.services.training import (
     LGBM_FEATURES,
     LGBM_FEATURES_V1,
+    LGBM_FEATURES_V2,
     NUMERIC_FEATURES_V1,
     REFERENCE_MODEL,
     _masked,
@@ -317,7 +318,7 @@ def features_runners(importances: dict[str, pd.Series], old_feats: list[str] | N
     (`lgbm_market_<tag>`, `lgbm_form_<tag>`). Même protocole que la production ;
     importance des variables du dernier pli. Par défaut : v1 contre v1 + v2."""
     old = old_feats if old_feats is not None else LGBM_FEATURES_V1
-    new = new_feats if new_feats is not None else LGBM_FEATURES
+    new = new_feats if new_feats is not None else LGBM_FEATURES_V2
 
     def market(feats: list[str]) -> ModelRunner:
         def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
@@ -363,11 +364,9 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
     frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
     base_runners = model_runners()
     importances: dict[str, pd.Series] = {}
-    from horse_intelligence.intelligence.feature_engineering import V3_FEATURES
-
-    # v2 : variables d'origine contre v1 + v2 ; v3 : production (v1 + v2) contre + v3
-    old_feats, new_feats = ((LGBM_FEATURES_V1, LGBM_FEATURES) if stage == "v2" else
-                            (LGBM_FEATURES, [*LGBM_FEATURES, *V3_FEATURES]))
+    # v2 : variables d'origine contre v1 + v2 ; v3 : v1 + v2 contre v1 + v2 + v3
+    old_feats, new_feats = ((LGBM_FEATURES_V1, LGBM_FEATURES_V2) if stage == "v2" else
+                            (LGBM_FEATURES_V2, LGBM_FEATURES))
     new_m, new_f = f"lgbm_market_{stage}", f"lgbm_form_{stage}"
     pairs = (("lgbm_market", new_m), ("lgbm_form", new_f))
     runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL],
