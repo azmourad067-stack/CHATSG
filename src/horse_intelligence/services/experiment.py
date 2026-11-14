@@ -589,18 +589,10 @@ def place_runners() -> dict[str, ModelRunner]:
             "place_stack": combined(("score", "h_lgbm", "h_mkt"))}
 
 
-def place_paired_bootstrap(frame: pd.DataFrame, a: str, b: str, n_boot: int = 2000,
-                           seed: int = 0) -> dict[str, float]:
-    """Différence de log-loss « placé » (A − B) par course, IC 95 % par rééchantillonnage
-    des courses. Négatif = A meilleur."""
-    from horse_intelligence.models.place_model import place_log_losses
+def place_paired_bootstrap(frame: pd.DataFrame, a: str, b: str) -> dict[str, float]:
+    from horse_intelligence.models.place_model import place_paired_bootstrap as boot
 
-    d = (place_log_losses(frame, frame[a]) - place_log_losses(frame, frame[b])).to_numpy()
-    rng = np.random.default_rng(seed)
-    boots = d[rng.integers(0, d.size, size=(n_boot, d.size))].mean(axis=1)
-    return {"n_races": int(d.size), "mean_diff": float(d.mean()),
-            "ci_low": float(np.quantile(boots, 0.025)),
-            "ci_high": float(np.quantile(boots, 0.975))}
+    return boot(frame, frame[a], frame[b])
 
 
 def place_metrics(frame: pd.DataFrame, col: str) -> dict[str, float]:
@@ -627,7 +619,7 @@ def run_place_experiment(engine: Engine, min_train_days: int = 21, test_days: in
     from sqlalchemy import text
 
     from horse_intelligence.evaluation.place_betting import select_then_test
-    from horse_intelligence.models.place_model import placed_target, places_paid
+    from horse_intelligence.models.place_model import place_eval_frame
 
     t0 = time.perf_counter()
     raw = load_raw(engine)
@@ -639,12 +631,7 @@ def run_place_experiment(engine: Engine, min_train_days: int = 21, test_days: in
     wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
     evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
     names = list(runners)
-    ok = evald.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)
-    f = evald[ok & (places_paid(evald) > 0)]
-    # courses où le nombre de placés correspond à la règle (ni ex æquo ni anomalie)
-    n_placed = placed_target(f).groupby(f["race_id"]).transform("sum")
-    expected = np.minimum(places_paid(f), f["n_runners"])
-    f = f[n_placed == expected]
+    f = place_eval_frame(evald, names)
     with engine.connect() as conn:
         payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
                                    "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)

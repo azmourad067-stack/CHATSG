@@ -83,6 +83,30 @@ def test_place_rules_pick_one_horse_per_race() -> None:
     assert all(r.kind == "safe" for r in rule_grid("harville_market"))
 
 
+def test_place_market_model_round_trip(repo: Repository) -> None:
+    from horse_intelligence.intelligence.feature_engineering import (
+        CATEGORICAL,
+        build_dataset,
+        load_raw,
+    )
+    from horse_intelligence.models.place_model import PlaceMarketModel
+    from horse_intelligence.services.training import LGBM_FEATURES, _with_market
+
+    populate(repo, days=24)
+    f = build_dataset(load_raw(repo.engine)).frame
+    f = _with_market(f[f["won"].notna()])
+    dates = sorted(f["race_date"].unique())
+    base, cal, test = (f[f["race_date"] < dates[14]],
+                       f[f["race_date"].between(dates[14], dates[18])],
+                       f[f["race_date"] > dates[18]])
+    m = PlaceMarketModel(LGBM_FEATURES, CATEGORICAL).fit(base, cal)
+    p = m.predict(test)
+    sums = pd.Series(p, index=test.index).groupby(test["race_id"]).sum()
+    assert np.allclose(sums, 3.0, atol=1e-6)  # 8 partants → 3 places
+    again = PlaceMarketModel.from_dict(m.to_dict()).predict(test)
+    np.testing.assert_allclose(again, p)
+
+
 def test_place_experiment_runs_end_to_end(repo: Repository) -> None:
     from horse_intelligence.services.experiment import PLACE_MODELS, run_place_experiment
 

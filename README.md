@@ -29,7 +29,7 @@ connexion à un compte opérateur, aucune garantie de gain.
 | Brique | Contenu |
 |---|---|
 | Variables « as-of » | Instant de décision = départ − 10 min. Historique interne (cheval, jockey, entraîneur, couple cheval-jockey) limité aux dates **strictement antérieures** ; cotes de référence publiées avant la décision ; musique et cumuls de carrière de la source, dont le caractère « avant course » est contrôlé par un audit automatique à chaque entraînement |
-| Probabilités | Calculées par course (softmax), elles somment à 100 % sans renormalisation ad hoc. Places : calcul exact (Harville généralisé) avec le nombre de places payées, qui suit les partants **déclarés** (vérifié sur les rapports réels) |
+| Probabilités | Calculées par course (softmax), elles somment à 100 % sans renormalisation ad hoc. Places : modèle placé (LightGBM appris sur « finit dans les places payées », combiné aux cotes, somme ajustée au nombre de places) quand il est validé et que les cotes sont connues, sinon calcul exact de Harville. Le nombre de places payées suit les partants **déclarés** (vérifié sur les rapports réels) |
 | Modèles comparés | Uniforme · marché brut · **marché calibré (référence à battre)** · logit conditionnel de forme · LightGBM forme seule · LightGBM combiné au marché |
 | Validation | Walk-forward (fenêtre croissante, calibration sur la fin de l'apprentissage, test sur les jours suivants). Mesures : log-loss, Brier, ECE, AUC, top-1/top-3, et bootstrap apparié par course contre le marché calibré |
 | Promotion | Un modèle ne devient « actif » que si son gain de log-loss sur le marché calibré a un IC 95 % entièrement négatif sur au moins 300 courses. Sinon, il reste « candidat » : l'interface l'indique et n'affiche aucun signal de valeur |

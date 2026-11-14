@@ -58,6 +58,9 @@ def test_end_to_end_training(trained, tmp_path) -> None:  # type: ignore[no-unty
     # échantillon trop petit : aucun modèle candidat promu, la référence est active
     assert rep.registered["lgbm_market"]["status"] == "candidate"
     assert rep.registered["market_calibrated"]["status"] == "active"
+    # modèle placé enregistré, mais non promu sur un si petit échantillon
+    assert rep.registered["place_market"]["status"] == "candidate"
+    assert set(rep.place) == {"n_races", "vs_incumbent", "vs_market", "incumbent_vs_market"}
     assert latest_report(repo.engine)["n_races"] == rep.n_races
     meta = latest_model(repo.engine, "lgbm_form")
     assert meta["artifact_uri"].startswith("db://models/")
@@ -110,6 +113,22 @@ def test_predict_upcoming_race(trained) -> None:  # type: ignore[no-untyped-def]
     assert np.allclose(relative_contributions(model, race).sum(axis=0), 0.0)
     trained_race = int(repo.races_on(START_DAY + timedelta(days=3))["race_id"].iloc[0])
     assert predict_race(repo.engine, trained_race).in_sample
+
+
+def test_place_model_used_only_once_validated(trained) -> None:  # type: ignore[no-untyped-def]
+    from horse_intelligence.models.registry import activate_version
+
+    repo, rep = trained
+    race_id = int(repo.races_on(START_DAY + timedelta(days=29))["race_id"].iloc[0])
+    before = predict_race(repo.engine, race_id)
+    assert before.place_method == "harville"  # modèle placé seulement candidat
+    activate_version(repo.engine, "place_market", rep.registered["place_market"]["version"])
+    after = predict_race(repo.engine, race_id)
+    assert after.place_method == "model"
+    p = after.table["p_place"]
+    assert p.sum() == pytest.approx(3.0, abs=1e-6) and p.between(0, 1).all()
+    assert not np.allclose(p.sort_index(), before.table["p_place"].sort_index())
+    pd.testing.assert_series_equal(after.table["p_win"], before.table["p_win"])
 
 
 def test_predict_without_model(repo: Repository) -> None:

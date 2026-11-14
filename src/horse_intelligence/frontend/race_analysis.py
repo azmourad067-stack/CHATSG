@@ -49,7 +49,8 @@ def _model_key() -> str:
     from horse_intelligence.models.registry import latest_model
 
     engine = get_context().repo.engine
-    metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated")]
+    metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated",
+                                                "place_market")]
     return "|".join(str(m["version"]) if m else "-" for m in metas)
 
 
@@ -115,7 +116,10 @@ def _render_prediction(pred: RacePrediction, horses: dict[int, str]) -> None:
     st.caption("Probabilités arrondies au point : la précision réelle est bien moindre. "
                "Intervalle = 10e-90e centiles d'un ensemble de modèles appris sur des "
                "rééchantillonnages de courses (incertitude d'estimation). « Désaccord » = écart "
-               "maximal entre les estimations des modèles et du marché.")
+               "maximal entre les estimations des modèles et du marché. « P(place) » : "
+               + ("modèle placé (appris sur les arrivées dans les places payées)."
+                  if pred.place_method == "model" else
+                  "déduite des probabilités de victoire (formule de Harville)."))
 
     st.subheader("Forces, faiblesses et signaux faibles")
     for r in t.to_dict("records"):
