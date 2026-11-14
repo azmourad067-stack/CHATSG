@@ -1,0 +1,2 @@
+# Expérience « models » (scripts/experiment_models.py), hors application.
+catboost==1.2.10
