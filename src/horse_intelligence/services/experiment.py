@@ -525,3 +525,141 @@ def run_models_experiment(engine: Engine, min_train_days: int = 21, test_days: i
         "catboost_refits": sum(f["catboost_refit"] for f in fits),
         "errors": wf.errors,
     }
+
+
+PLACE_INCUMBENT = "harville_lgbm"
+PLACE_CHALLENGERS = ("place_market", "place_stack")
+PLACE_MODELS = ("harville_market", "harville_lgbm", "harville_lgbm_cal", *PLACE_CHALLENGERS)
+
+
+def place_runners() -> dict[str, ModelRunner]:
+    """Probabilités de PLACE (et non de victoire), apprises une fois par pli et partagées :
+    - `harville_market` : Harville sur les cotes du marché ;
+    - `harville_lgbm` : Harville sur `lgbm_market` (méthode de production) ;
+    - `harville_lgbm_cal` : la même, recalibrée (logistique + ajustement par course) ;
+    - `place_market` : LightGBM « placé » combiné à Harville du marché ;
+    - `place_stack` : LightGBM « placé » combiné aux deux Harville.
+    Logistique de combinaison apprise sur la partie récente de l'apprentissage."""
+    from horse_intelligence.models.place_model import (
+        PlaceCombiner,
+        PlaceModel,
+        harville_place,
+    )
+
+    state: dict[str, Any] = {"key": None}
+
+    def inputs(sub: pd.DataFrame, win: LgbmRaceModel, place: PlaceModel) -> dict[str, Any]:
+        return {"h_mkt": harville_place(sub, sub["mkt_prob"]),
+                "h_lgbm": harville_place(sub, win.predict(sub)),
+                "score": place.raw_score(sub)}
+
+    def bank(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> dict[str, Any]:
+        key = (base["race_date"].max(), len(base), test["race_date"].min())
+        if state["key"] != key:
+            cal, sub = _with_market(calib), _with_market(test)
+            win = LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=True).fit(base, cal)
+            place = PlaceModel(LGBM_FEATURES, CATEGORICAL).fit_score(base)
+            state.update(key=key, cal=cal, sub=sub, ci=inputs(cal, win, place),
+                         ti=inputs(sub, win, place))
+        return state
+
+    def lg(p: FloatArray) -> FloatArray:
+        q = np.clip(np.asarray(p, dtype=np.float64), 1e-6, 1 - 1e-6)
+        return np.asarray(np.log(q / (1 - q)), dtype=np.float64)
+
+    def fixed(col: str) -> ModelRunner:
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            b = bank(base, calib, test)
+            return _masked(test, b["sub"], b["ti"][col])
+        return run
+
+    def combined(cols: tuple[str, ...]) -> ModelRunner:
+        def matrix(d: dict[str, Any]) -> FloatArray:
+            return np.column_stack([d[c] if c == "score" else lg(d[c]) for c in cols])
+
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            b = bank(base, calib, test)
+            m = PlaceCombiner().fit(matrix(b["ci"]), b["cal"])
+            return _masked(test, b["sub"], m.predict(matrix(b["ti"]), b["sub"]))
+        return run
+
+    return {"harville_market": fixed("h_mkt"), "harville_lgbm": fixed("h_lgbm"),
+            "harville_lgbm_cal": combined(("h_lgbm",)),
+            "place_market": combined(("score", "h_mkt")),
+            "place_stack": combined(("score", "h_lgbm", "h_mkt"))}
+
+
+def place_paired_bootstrap(frame: pd.DataFrame, a: str, b: str, n_boot: int = 2000,
+                           seed: int = 0) -> dict[str, float]:
+    """Différence de log-loss « placé » (A − B) par course, IC 95 % par rééchantillonnage
+    des courses. Négatif = A meilleur."""
+    from horse_intelligence.models.place_model import place_log_losses
+
+    d = (place_log_losses(frame, frame[a]) - place_log_losses(frame, frame[b])).to_numpy()
+    rng = np.random.default_rng(seed)
+    boots = d[rng.integers(0, d.size, size=(n_boot, d.size))].mean(axis=1)
+    return {"n_races": int(d.size), "mean_diff": float(d.mean()),
+            "ci_low": float(np.quantile(boots, 0.025)),
+            "ci_high": float(np.quantile(boots, 0.975))}
+
+
+def place_metrics(frame: pd.DataFrame, col: str) -> dict[str, float]:
+    from horse_intelligence.evaluation.metrics import auc_score
+    from horse_intelligence.models.place_model import place_log_losses, placed_target
+
+    y, p = placed_target(frame), frame[col]
+    long = frame["mkt_odds"] > 10
+    top = frame.assign(_p=p).sort_values(["race_id", "_p"], ascending=[True, False]) \
+        .drop_duplicates("race_id")
+    return {"log_loss": float(place_log_losses(frame, p).mean()),
+            "brier": float(((p - y) ** 2).groupby(frame["race_id"]).sum().mean()),
+            "auc": auc_score(y, p),
+            "top1_placed": float(placed_target(top).mean()),
+            "outsiders_pred": float(p[long].mean()), "outsiders_obs": float(y[long].mean())}
+
+
+def run_place_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                         calib_days: int = 7) -> dict[str, Any]:
+    """Un modèle appris directement sur « placé » fait-il mieux que Harville appliqué au
+    modèle gagnant (méthode de production) ? Critère fixé AVANT de voir les résultats :
+    `place_market` ou `place_stack` bat `harville_lgbm` en log-loss « placé », IC 95 %
+    entièrement < 0. Puis sélection / test de règles de simple placé."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation.place_betting import select_then_test
+    from horse_intelligence.models.place_model import placed_target, places_paid
+
+    t0 = time.perf_counter()
+    raw = load_raw(engine)
+    ds = build_dataset(raw)
+    if not audit_source_aggregates(ds.frame).passed:
+        ds = build_dataset(raw, use_source_aggregates=False)
+    frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
+    runners = place_runners()
+    wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
+    evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
+    names = list(runners)
+    ok = evald.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)
+    f = evald[ok & (places_paid(evald) > 0)]
+    # courses où le nombre de placés correspond à la règle (ni ex æquo ni anomalie)
+    n_placed = placed_target(f).groupby(f["race_id"]).transform("sum")
+    expected = np.minimum(places_paid(f), f["n_runners"])
+    f = f[n_placed == expected]
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    vs_inc = {n: place_paired_bootstrap(f, n, PLACE_INCUMBENT)
+              for n in ("harville_lgbm_cal", *PLACE_CHALLENGERS)}
+    dates = sorted(frame["race_date"].unique())
+    return {
+        "period": [str(dates[0]), str(dates[-1])], "n_races": int(f["race_id"].nunique()),
+        "n_folds": len(wf.folds), "seconds": round(time.perf_counter() - t0, 1),
+        "metrics": {n: place_metrics(f, n) for n in names},
+        "vs_market": {n: place_paired_bootstrap(f, n, "harville_market")
+                      for n in names if n != "harville_market"},
+        "vs_incumbent": vs_inc,
+        "success": any(vs_inc[c]["ci_high"] < 0 for c in PLACE_CHALLENGERS),
+        "betting": {n: select_then_test(f, payouts, n)
+                    for n in ("harville_market", "harville_lgbm", *PLACE_CHALLENGERS)},
+        "errors": wf.errors,
+    }
