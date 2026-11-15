@@ -76,6 +76,15 @@ V2_FEATURES = SPEED_FEATURES + GEAR_FEATURES + APTITUDE_FEATURES + RECENT_FEATUR
 V3_FEATURES = ["going_pen", "going_level", "going_psf", "apt_going_runs", "apt_going_pct",
                "class_change", "dist_change", "apt_pair_runs", "apt_pair_pct",
                "trainer_course_runs", "trainer_course_win_rate"]
+# Variables « v4 » (11/2026), même règle d'adoption (expérience `features4`) :
+# - origines : résultats passés des produits du même père (toutes courses, même discipline,
+#   même tranche de distance) et du même père de la mère, dates strictement antérieures ;
+# - valeur handicap officielle (galop, publiée avec les engagements) : brute, relative au
+#   peloton et rang dans la course.
+V4_FEATURES = ["sire_runs", "sire_win_rate", "sire_disc_runs", "sire_disc_win_rate",
+               "sire_dist_runs", "sire_dist_win_rate", "damsire_runs", "damsire_win_rate",
+               "handicap_value", "handicap_value_rel", "handicap_rank_pct"]
+DIST_BANDS = (0, 1300, 1700, 2100, 2500, 2900, 3400, 99_999)
 D4 = "DEFERRE_ANTERIEURS_POSTERIEURS"
 APT_SHRINK = 3.0
 RECENT_DAYS = 30
@@ -122,6 +131,7 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
                res.reduction_km_s
         FROM race_results res JOIN races r ON r.race_id = res.race_id
         WHERE r.race_date <= :until""", until=until)
+    horses = _read(engine, "SELECT horse_id, sire, dam_sire FROM horses")
     going = _read(engine, """
         SELECT c.race_id, c.going_label, c.penetrometer, c.observed_at
         FROM racecourse_conditions c JOIN races r ON r.race_id = c.race_id
@@ -133,7 +143,8 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
           AND o.bet_type = 'SIMPLE_GAGNANT'""", until=until)
     for frame, cols in ((races, ["distance_m", "prize_eur", "declared_runners"]),
                         (entries, ["age", "draw", "weight_kg", "weight_carried_kg",
-                                   "handicap_distance_m", "career_starts", "career_wins",
+                                   "handicap_distance_m", "handicap_value",
+                                   "career_starts", "career_wins",
                                    "career_places", "career_earnings"]),
                         (results, ["finish_position", "reduction_km_s"]), (odds, ["odds"])):
         for c in cols:  # une colonne entièrement vide arrive en type objet
@@ -145,7 +156,7 @@ def load_raw(engine: Engine, until: date | None = None) -> dict[str, pd.DataFram
     odds["observed_at"] = _utc(odds["observed_at"])
     going["observed_at"] = _utc(going["observed_at"])
     return {"races": races, "entries": entries, "results": results, "odds": odds,
-            "going": going}
+            "going": going, "horses": horses}
 
 
 def _entries_at_decision(entries: pd.DataFrame, races: pd.DataFrame) -> pd.DataFrame:
@@ -442,6 +453,37 @@ def _add_v3_features(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_rc", "_going"])
 
 
+def _code(s: pd.Series) -> pd.Series:
+    """Code numérique d'une colonne texte (NaN si absente)."""
+    codes = pd.Series(pd.factorize(s.astype(object))[0], index=s.index).astype(float)
+    return codes.where(s.notna())
+
+
+def _add_v4_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Variables v4 : origines (dates strictement antérieures) et valeur handicap du jour."""
+    for c in ("sire", "dam_sire"):
+        if c not in df:
+            df[c] = np.nan
+    df = df.copy()
+    df["_sire"], df["_damsire"] = _code(df["sire"]), _code(df["dam_sire"])
+    df["_disc"] = _code(df["discipline"])
+    df["_dband"] = pd.cut(df["distance_m"], DIST_BANDS, labels=False).astype(float)
+    hist = df[df["has_result"]]
+    df = _actor_keyed_rate(df, hist, ["_sire"], "sire")
+    df = _actor_keyed_rate(df, hist, ["_sire", "_disc"], "sire_disc")
+    df = _actor_keyed_rate(df, hist, ["_sire", "_dband"], "sire_dist")
+    df = _actor_keyed_rate(df, hist, ["_damsire"], "damsire")
+    hv = pd.to_numeric(df["handicap_value"], errors="coerce") if "handicap_value" in df \
+        else pd.Series(np.nan, index=df.index)
+    df["handicap_value"] = hv.astype("float64")
+    df["handicap_value_rel"] = hv - hv.groupby(df["race_id"]).transform("mean")
+    n = hv.groupby(df["race_id"]).transform("count")
+    df["handicap_rank_pct"] = ((hv.groupby(df["race_id"]).rank(ascending=False) - 1)
+                               / (n - 1).clip(lower=1)).where(hv.notna())
+    # beaucoup de colonnes ajoutées une à une : table défragmentée en une fois
+    return df.drop(columns=["_sire", "_damsire", "_disc", "_dband"]).copy()
+
+
 def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True) -> Dataset:
     races = raw["races"].copy()
     races["decision_time"] = races["scheduled_start_utc"] - DECISION_OFFSET
@@ -512,6 +554,10 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
 
     df = _add_v2_features(df)
     df = _add_v3_features(df)
+    if raw.get("horses") is not None and not raw["horses"].empty:
+        df = df.merge(raw["horses"][["horse_id", "sire", "dam_sire"]], on="horse_id",
+                      how="left")
+    df = _add_v4_features(df)
 
     # --- variables relatives à la course
     for c in RELATIVE_SOURCES:

@@ -344,7 +344,8 @@ def features_runners(importances: dict[str, pd.Series], old_feats: list[str] | N
 def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
                             calib_days: int = 7, stage: str = "v2") -> dict[str, Any]:
     """Un nouveau jeu de variables améliore-t-il la prévision ? `stage="v2"` : variables
-    d'origine contre v1 + v2 ; `stage="v3"` : production (v1 + v2) contre + v3. Critère fixé
+    d'origine contre v1 + v2 ; `stage="v3"` : v1 + v2 contre + v3 ; `stage="v4"` : production
+    contre + v4 (origines, valeur handicap). Critère fixé
     AVANT de voir les résultats : `lgbm_market_<stage>` bat `lgbm_market`, IC 95 % < 0.
     Puis, sur les prédictions hors échantillon : sélection / test des règles de mise
     (mêmes grilles que la validation) et stratégies par rang."""
@@ -365,8 +366,12 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
     base_runners = model_runners()
     importances: dict[str, pd.Series] = {}
     # v2 : variables d'origine contre v1 + v2 ; v3 : v1 + v2 contre v1 + v2 + v3
-    old_feats, new_feats = ((LGBM_FEATURES_V1, LGBM_FEATURES_V2) if stage == "v2" else
-                            (LGBM_FEATURES_V2, LGBM_FEATURES))
+    from horse_intelligence.intelligence.feature_engineering import V4_FEATURES
+
+    stages = {"v2": (LGBM_FEATURES_V1, LGBM_FEATURES_V2), "v3": (LGBM_FEATURES_V2, LGBM_FEATURES),
+              # v4 : production contre production + origines et valeur handicap
+              "v4": (LGBM_FEATURES, [*LGBM_FEATURES, *V4_FEATURES])}
+    old_feats, new_feats = stages[stage]
     new_m, new_f = f"lgbm_market_{stage}", f"lgbm_form_{stage}"
     pairs = (("lgbm_market", new_m), ("lgbm_form", new_f))
     runners = {REFERENCE_MODEL: base_runners[REFERENCE_MODEL],

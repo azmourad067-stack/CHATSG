@@ -8,6 +8,7 @@
 #   frozen : validation des règles figées le 10/11/2026 sur [start, end]
 #   features : variables v2 (vitesse, ferrure, aptitudes, forme récente) vs modèle actuel
 #   features3 : variables v3 (terrain, catégorie, distance, couple, entraîneur) vs production
+#   features4 : variables v4 (origines, valeur handicap) vs production
 #   models : LightGBM classement par course, CatBoost, empilement vs modèle actuel
 #   place : modèle appris sur « placé » vs Harville appliqué au modèle gagnant
 #   betting2 : combinés avec le modèle placé + espérance au rapport final prévu
@@ -23,7 +24,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place, betting2, tuning, tuning_large, frozen_national]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -90,6 +91,9 @@ jobs:
       - name: Variables v3 vs production (walk-forward)
         if: env.EXPERIMENT == 'features3'
         run: python scripts/experiment_features.py --stage v3
+      - name: Variables v4 vs production (walk-forward)
+        if: env.EXPERIMENT == 'features4'
+        run: python scripts/experiment_features.py --stage v4
       - name: Modèle placé vs Harville (walk-forward)
         if: env.EXPERIMENT == 'place'
         run: python scripts/experiment_place.py
