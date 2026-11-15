@@ -120,6 +120,7 @@ def test_tuning_experiment_end_to_end(repo: Repository) -> None:
     assert rep["chosen"] in ("petit", "lent")
     assert set(rep["second_half"]) == {"petit", "lent"}
     assert isinstance(rep["success"], bool) and not rep["errors"]
+    assert isinstance(rep["success_both_halves"], bool)
     assert rep["selection_period"][1] < rep["test_period"][0]
 
 
@@ -137,3 +138,15 @@ def test_race_model_uses_tuned_settings_place_model_does_not() -> None:
     assert race.num_rounds == 400
     place = PlaceModel(["x"], [])
     assert place.params["num_leaves"] == 15 and place.num_rounds == 300
+
+
+def test_large_tuning_baseline_is_production() -> None:
+    from horse_intelligence.models.lightgbm_model import (
+        DEFAULT_PARAMS,
+        RACE_NUM_ROUNDS,
+        RACE_PARAMS,
+    )
+    from horse_intelligence.services.experiment import TUNING_LARGE_CONFIGS
+
+    params, rounds = TUNING_LARGE_CONFIGS["production"]
+    assert {**DEFAULT_PARAMS, **params} == RACE_PARAMS and rounds == RACE_NUM_ROUNDS

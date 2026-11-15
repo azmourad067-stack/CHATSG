@@ -730,6 +730,15 @@ TUNING_CONFIGS: dict[str, tuple[dict[str, Any], int]] = {
 }
 
 
+# Second test (15/11/2026) : « large » contre le réglage de production « plus_profond ».
+# Les deux moitiés ont déjà été vues : critère plus strict, IC 95 % < 0 sur CHAQUE moitié.
+TUNING_LARGE_CONFIGS: dict[str, tuple[dict[str, Any], int]] = {
+    "production": ({"num_leaves": 31, "min_data_in_leaf": 60}, 400),
+    "large": ({"num_leaves": 63, "learning_rate": 0.02, "min_data_in_leaf": 100,
+               "feature_fraction": 0.7}, 500),
+}
+
+
 def run_tuning_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
                           calib_days: int = 7,
                           configs: dict[str, tuple[dict[str, Any], int]] | None = None
@@ -779,6 +788,9 @@ def run_tuning_experiment(engine: Engine, min_train_days: int = 21, test_days: i
         "configs": {n: {"params": p, "num_rounds": r} for n, (p, r) in cfgs.items()},
         "first_half": on_first, "second_half": on_second, "chosen": chosen,
         "success": on_second[chosen]["ci_high"] < 0,
+        # critère plus strict (réglage déjà vu sur les deux moitiés) : meilleur sur CHACUNE
+        "success_both_halves": on_first[chosen]["ci_high"] < 0
+        and on_second[chosen]["ci_high"] < 0,
         "metrics_second_half": {n: compute_metrics(second, second[n]).as_dict() for n in names},
         "errors": wf.errors,
     }
