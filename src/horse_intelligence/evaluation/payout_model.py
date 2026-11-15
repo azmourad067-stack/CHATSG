@@ -99,8 +99,9 @@ def predict_payouts(f: pd.DataFrame, win_col: str, place_col: str | None,
                                 num_boost_round=PAYOUT_ROUNDS)
             resid = y_all[train] - booster.predict(x_all[train])
             smear = float(np.mean(np.exp(resid)))  # correction de retransformation (Duan)
-            ref_t = ref[test] if isinstance(ref, pd.Series) else 0.0
-            f.loc[test, out_col] = np.exp(booster.predict(x_all[test]) + ref_t) * smear
+            ref_t = ref[test].to_numpy() if isinstance(ref, pd.Series) else 0.0
+            pred = np.asarray(booster.predict(x_all[test]), dtype=np.float64)
+            f.loc[test, out_col] = np.exp(pred + ref_t) * smear
     return f
 
 
