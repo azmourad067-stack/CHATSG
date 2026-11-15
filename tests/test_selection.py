@@ -91,3 +91,25 @@ def test_audience_is_collected_and_old_databases_are_upgraded(tmp_path) -> None:
     assert "audience" in {c["name"] for c in inspect(engine).get_columns("races")}
     with engine.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM races")).scalar_one() == 1
+
+
+def test_frozen_rule_split_by_audience(repo) -> None:  # type: ignore[no-untyped-def]
+    from sqlalchemy import update
+    from tests.synthetic import populate
+
+    from horse_intelligence.data.storage import database as db
+    from horse_intelligence.services.experiment import run_frozen_by_audience
+    from horse_intelligence.services.training import train_and_evaluate
+
+    populate(repo, days=24)
+    train_and_evaluate(repo.engine, min_train_days=12, test_days=4, calib_days=4, n_members=1)
+    with repo.engine.begin() as conn:
+        conn.execute(update(db.races).values(audience="NATIONAL"))
+        conn.execute(update(db.races).where(db.races.c.course_num == 1)
+                     .values(audience="LOCAL"))
+    rep = run_frozen_by_audience(repo.engine)
+    assert set(rep["n_races"]) == {"nationales", "régionales"}
+    assert set(rep["rule"]) == {"toutes", "nationales", "régionales"}
+    tot = rep["rule"]["toutes"]["total"]["n_bets"]
+    assert tot == (rep["rule"]["nationales"]["total"]["n_bets"]
+                   + rep["rule"]["régionales"]["total"]["n_bets"])

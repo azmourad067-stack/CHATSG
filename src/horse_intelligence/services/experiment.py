@@ -782,3 +782,36 @@ def run_tuning_experiment(engine: Engine, min_train_days: int = 21, test_days: i
         "metrics_second_half": {n: compute_metrics(second, second[n]).as_dict() for n in names},
         "errors": wf.errors,
     }
+
+
+def run_frozen_by_audience(engine: Engine, model_col: str = INCUMBENT,
+                           rule_value: str = "Trot G") -> dict[str, Any]:
+    """Règle figée (par défaut « 3e du modèle, gagnant, trot G ») sur les prédictions hors
+    échantillon du dernier entraînement, séparément pour les réunions NATIONALES (programme
+    de pmu.fr, où l'on peut parier en ligne) et RÉGIONALES (LOCAL / REGIONAL)."""
+    from sqlalchemy import text
+
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    with engine.connect() as conn:
+        races = pd.read_sql(text("SELECT race_id, label, conditions_text, reunion_num, "
+                                 "audience FROM races"), conn)
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    frame = _with_market(pred).merge(races, on="race_id", how="left")
+    frame["groupe_audience"] = np.where(frame["audience"].isin(["LOCAL", "REGIONAL"]),
+                                        "régionales", np.where(frame["audience"].isna(),
+                                                               "inconnue", "nationales"))
+    out: dict[str, Any] = {"period": [str(frame["race_date"].min()),
+                                      str(frame["race_date"].max())],
+                           "n_races": {g: int(f["race_id"].nunique())
+                                       for g, f in frame.groupby("groupe_audience")}}
+    subsets = {"toutes": frame,
+               "nationales": frame[frame["groupe_audience"] == "nationales"],
+               "régionales": frame[frame["groupe_audience"] == "régionales"]}
+    out["rule"] = {name: frozen_rule_by_period(f, payouts, (model_col,), rule_value)[model_col]
+                   for name, f in subsets.items() if not f.empty}
+    return out

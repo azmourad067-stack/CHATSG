@@ -12,6 +12,7 @@
 #   place : modèle appris sur « placé » vs Harville appliqué au modèle gagnant
 #   betting2 : combinés avec le modèle placé + espérance au rapport final prévu
 #   tuning : réglage de LightGBM choisi sur la 1re moitié des plis, jugé sur la 2nde
+#   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
 
@@ -21,7 +22,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place, betting2, tuning]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place, betting2, tuning, frozen_national]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -97,6 +98,9 @@ jobs:
       - name: Réglage de LightGBM (walk-forward)
         if: env.EXPERIMENT == 'tuning'
         run: python scripts/experiment_tuning.py
+      - name: Règle trot G, réunions nationales vs régionales
+        if: env.EXPERIMENT == 'frozen_national'
+        run: python scripts/frozen_by_audience.py
       - name: Simulation de bankroll (Monte-Carlo)
         if: env.EXPERIMENT == 'bankroll'
         run: python scripts/simulate_bankroll.py
