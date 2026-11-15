@@ -79,7 +79,8 @@ def predict_payouts(f: pd.DataFrame, win_col: str, place_col: str | None,
     f["placed"] = placed_target(f)
     month = pd.to_datetime(f["race_date"]).dt.to_period("M")
     months = sorted(month.unique())
-    targets = [("exp_payout_win", "payout_win", f["won"] == 1, None)]
+    targets: list[tuple[str, str, pd.Series, str | None]] = [
+        ("exp_payout_win", "payout_win", f["won"] == 1, None)]
     if place_col is not None:
         targets.append(("exp_payout_place", "payout_place", f["placed"] == 1, place_col))
     for out_col, y_col, mask, pcol in targets:
