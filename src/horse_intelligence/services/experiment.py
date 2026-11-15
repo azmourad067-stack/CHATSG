@@ -650,3 +650,133 @@ def run_place_experiment(engine: Engine, min_train_days: int = 21, test_days: in
                     for n in ("harville_market", "harville_lgbm", *PLACE_CHALLENGERS)},
         "errors": wf.errors,
     }
+
+
+def run_betting2_experiment(engine: Engine, model_col: str = INCUMBENT,
+                            place_col: str = "place_market") -> dict[str, Any]:
+    """Deux pistes de paris sur les prédictions hors échantillon du dernier entraînement.
+
+    1. Paris combinés (couplé gagnant / placé, trio, 2 sur 4) avec des probabilités de
+       paire déduites du MODÈLE PLACÉ (Plackett-Luce calé sur P(placé)), comparées à
+       l'approche précédente (Plackett-Luce sur les probabilités de victoire).
+    2. Espérance calculée avec le RAPPORT FINAL PRÉVU (modèle appris mois par mois sur les
+       courses passées) au lieu de la cote de référence, en simple gagnant et placé.
+
+    Critère fixé AVANT de voir les résultats : une règle choisie sur la 1re moitié est
+    rentable sur la 2nde avec un IC 95 % du ROI entièrement > 0."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import payout_model as pm
+    from horse_intelligence.evaluation.combo_simulator import (
+        COMBO_BETS,
+        build_candidates,
+        select_then_test_combos,
+    )
+    from horse_intelligence.models.place_model import pl_place_column
+    from horse_intelligence.services.training import load_oos_predictions
+
+    t0 = time.perf_counter()
+    pred = load_oos_predictions(engine)
+    if pred is None or place_col not in pred:
+        raise ValueError("prédictions hors échantillon du modèle placé absentes : "
+                         "relancez l'entraînement")
+    pred = _with_market(pred)
+    pred = pred[pred.groupby("race_id")[[model_col, place_col, REFERENCE_MODEL]]
+                .transform(lambda s: s.notna().all()).all(axis=1)].copy()
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    # --- 1. paris combinés
+    pred["pl_place"] = pl_place_column(pred, place_col)
+    combos: dict[str, dict[str, Any]] = {}
+    for col in (model_col, "pl_place"):
+        cand = build_candidates(pred.dropna(subset=[col]), payouts, col, REFERENCE_MODEL).table
+        combos[col] = {bt: asdict(select_then_test_combos(cand, bt)) for bt in COMBO_BETS
+                       if not cand.empty and (cand["bet_type"] == bt).any()}
+    t_combos = round(time.perf_counter() - t0, 1)
+    # --- 2. rapport final prévu
+    f = pm.predict_payouts(pm.attach_payouts(pred, payouts), model_col, place_col)
+    singles = {
+        "gagnant (cote de référence)": pm.select_then_test(f, "win", "reference", model_col,
+                                                           place_col),
+        "gagnant (rapport prévu)": pm.select_then_test(f, "win", "predicted", model_col,
+                                                       place_col),
+        "placé (rapport prévu)": pm.select_then_test(f, "place", "predicted", model_col,
+                                                     place_col),
+    }
+    tests = [r["test"] for r in singles.values()] + [
+        r["test"] for by_bt in combos.values() for r in by_bt.values()]
+    return {
+        "period": [str(pred["race_date"].min()), str(pred["race_date"].max())],
+        "n_races": int(pred["race_id"].nunique()),
+        "seconds": round(time.perf_counter() - t0, 1), "seconds_combos": t_combos,
+        "combos": combos, "payout_accuracy": pm.payout_accuracy(f), "singles": singles,
+        "success": any(t is not None and t["n_bets"] > 0 and t["roi_ci"][0] > 0
+                       for t in tests),
+    }
+
+
+TUNING_CONFIGS: dict[str, tuple[dict[str, Any], int]] = {
+    # nom -> (paramètres LightGBM modifiés, nombre d'arbres) ; « actuel » = production
+    "actuel": ({}, 300),
+    "plus_profond": ({"num_leaves": 31, "min_data_in_leaf": 60}, 400),
+    "plus_lent": ({"learning_rate": 0.015}, 600),
+    "regularise": ({"min_data_in_leaf": 150, "lambda_l2": 20.0, "feature_fraction": 0.6},
+                   400),
+    "large": ({"num_leaves": 63, "learning_rate": 0.02, "min_data_in_leaf": 100,
+               "feature_fraction": 0.7}, 500),
+}
+
+
+def run_tuning_experiment(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                          calib_days: int = 7,
+                          configs: dict[str, tuple[dict[str, Any], int]] | None = None
+                          ) -> dict[str, Any]:
+    """Réglage de LightGBM (modèle « + marché ») sans tricher : le meilleur réglage est
+    choisi sur la 1re moitié des plis, puis jugé sur la 2nde. Critère fixé AVANT de voir les
+    résultats : sur la 2nde moitié, le réglage choisi bat le réglage actuel, IC 95 % < 0."""
+    from horse_intelligence.models.lightgbm_model import DEFAULT_PARAMS
+
+    cfgs = configs if configs is not None else TUNING_CONFIGS
+    t0 = time.perf_counter()
+    raw = load_raw(engine)
+    ds = build_dataset(raw)
+    if not audit_source_aggregates(ds.frame).passed:
+        ds = build_dataset(raw, use_source_aggregates=False)
+    frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
+
+    def runner(params: dict[str, Any], rounds: int) -> ModelRunner:
+        def run(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+            m = LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=True,
+                              params={**DEFAULT_PARAMS, "num_threads": 4, **params},
+                              num_rounds=rounds)
+            m.fit(base, _with_market(calib))
+            sub = _with_market(test)
+            return _masked(test, sub, m.predict(sub))
+        return run
+
+    runners = {name: runner(p, r) for name, (p, r) in cfgs.items()}
+    wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
+    evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
+    names = list(runners)
+    mkt = _with_market(evald)
+    mkt = mkt[mkt.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)]
+    half = len(wf.folds) // 2
+    first, second = mkt[mkt["fold"] < half], mkt[mkt["fold"] >= half]
+    base_name = next(iter(cfgs))
+    on_first = {n: paired_bootstrap(first, first[n], first[base_name])
+                for n in names if n != base_name}
+    chosen = min(on_first, key=lambda n: on_first[n]["mean_diff"])
+    on_second = {n: paired_bootstrap(second, second[n], second[base_name])
+                 for n in names if n != base_name}
+    return {
+        "n_races": int(mkt["race_id"].nunique()), "n_folds": len(wf.folds),
+        "seconds": round(time.perf_counter() - t0, 1),
+        "selection_period": [str(first["race_date"].min()), str(first["race_date"].max())],
+        "test_period": [str(second["race_date"].min()), str(second["race_date"].max())],
+        "configs": {n: {"params": p, "num_rounds": r} for n, (p, r) in cfgs.items()},
+        "first_half": on_first, "second_half": on_second, "chosen": chosen,
+        "success": on_second[chosen]["ci_high"] < 0,
+        "metrics_second_half": {n: compute_metrics(second, second[n]).as_dict() for n in names},
+        "errors": wf.errors,
+    }

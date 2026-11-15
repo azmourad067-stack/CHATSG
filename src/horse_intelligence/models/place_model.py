@@ -219,3 +219,36 @@ class PlaceMarketModel:
         place.booster = lgb.Booster(model_str=d["booster"])
         combiner = PlaceCombiner(np.asarray(d["coef"], dtype=np.float64), float(d["intercept"]))
         return cls(d["features"], d["categorical"], place, combiner)
+
+
+def pl_strengths_from_place(q: npt.ArrayLike, k: int, n_samples: int = 4000,
+                            n_iter: int = 10, seed: int = 0) -> FloatArray:
+    """Forces de Plackett-Luce (somme 1) dont les probabilités de finir dans les `k`
+    premiers reproduisent `q` (probabilités du modèle placé). Ajustement itératif sur des
+    tirages de Gumbel fixés : log force += log(q / q_simulée). Sert à déduire, du modèle
+    placé, la probabilité qu'une PAIRE de chevaux finisse dans les premiers."""
+    q = np.clip(np.asarray(q, dtype=np.float64), 1e-4, 1 - 1e-4)
+    n = q.size
+    if k <= 0 or k >= n:
+        return np.full(n, 1.0 / n)
+    noise = np.random.default_rng(seed).gumbel(size=(n_samples, n))
+    logs = np.log(q / q.sum())
+    for _ in range(n_iter):
+        top = np.argpartition(-(logs + noise), k - 1, axis=1)[:, :k]
+        sim = np.bincount(top.ravel(), minlength=n) / n_samples
+        logs = logs + np.log(q / np.clip(sim, 0.5 / n_samples, None))
+        logs -= logs.max()
+    s = np.exp(logs)
+    return np.asarray(s / s.sum(), dtype=np.float64)
+
+
+def pl_place_column(frame: pd.DataFrame, place_col: str) -> FloatArray:
+    """Forces de Plackett-Luce calées course par course sur la colonne `place_col`."""
+    out = pd.Series(np.nan, index=frame.index)
+    k = places_paid(frame)
+    for _, idx in frame.groupby("race_id").groups.items():
+        q = frame.loc[idx, place_col]
+        n = int(k.loc[idx].iloc[0])
+        if n and not q.isna().any():
+            out.loc[idx] = pl_strengths_from_place(q.to_numpy(), n)
+    return np.asarray(out.to_numpy(), dtype=np.float64)

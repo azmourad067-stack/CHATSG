@@ -10,6 +10,8 @@
 #   features3 : variables v3 (terrain, catégorie, distance, couple, entraîneur) vs production
 #   models : LightGBM classement par course, CatBoost, empilement vs modèle actuel
 #   place : modèle appris sur « placé » vs Harville appliqué au modèle gagnant
+#   betting2 : combinés avec le modèle placé + espérance au rapport final prévu
+#   tuning : réglage de LightGBM choisi sur la 1re moitié des plis, jugé sur la 2nde
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
 
@@ -19,7 +21,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, models, place, betting2, tuning]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -89,6 +91,12 @@ jobs:
       - name: Modèle placé vs Harville (walk-forward)
         if: env.EXPERIMENT == 'place'
         run: python scripts/experiment_place.py
+      - name: Combinés avec le modèle placé et rapport final prévu
+        if: env.EXPERIMENT == 'betting2'
+        run: python scripts/experiment_betting2.py
+      - name: Réglage de LightGBM (walk-forward)
+        if: env.EXPERIMENT == 'tuning'
+        run: python scripts/experiment_tuning.py
       - name: Simulation de bankroll (Monte-Carlo)
         if: env.EXPERIMENT == 'bankroll'
         run: python scripts/simulate_bankroll.py
