@@ -55,6 +55,8 @@ class PmuCourse(_Tolerant):
 
 class PmuReunion(_Tolerant):
     num_officiel: int = Field(alias="numOfficiel")
+    # NATIONAL (programme national de pmu.fr) | REGIONAL | LOCAL (réunions régionales)
+    audience: str | None = None
     hippodrome: PmuHippodrome
     pays: PmuPays | None = None
     courses: list[PmuCourse] = Field(default_factory=list)

@@ -161,6 +161,8 @@ races = Table(
     Column("scheduled_start_utc", UTCDateTime),
     Column("status", String(40)),
     Column("result_final", Boolean, default=False),
+    # NATIONAL = programme national de pmu.fr ; REGIONAL / LOCAL = réunions régionales
+    Column("audience", String(20)),
     Column("source_key", String(40), nullable=False),
     Column("first_observed_at", UTCDateTime, nullable=False),
     Column("last_observed_at", UTCDateTime, nullable=False),
@@ -426,5 +428,18 @@ def make_engine(database_url: str) -> Engine:
     return engine
 
 
+# Colonnes ajoutées après la création des tables (create_all ne modifie pas une table
+# existante) : (table, colonne, type SQL). En production, la migration Supabase du même
+# nom les crée aussi.
+ADDED_COLUMNS = (("races", "audience", "VARCHAR(20)"),)
+
+
 def init_db(engine: Engine) -> None:
+    from sqlalchemy import inspect, text
+
     metadata.create_all(engine)
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table, column, sql_type in ADDED_COLUMNS:
+            if column not in {c["name"] for c in insp.get_columns(table)}:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))

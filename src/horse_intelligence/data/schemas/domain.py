@@ -29,6 +29,7 @@ class RaceRecord:
     result_final: bool
     going_label: str | None
     penetrometer: str | None
+    audience: str | None = None  # NATIONAL | REGIONAL | LOCAL (réunion PMU)
 
     @property
     def key(self) -> str:

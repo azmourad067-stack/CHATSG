@@ -27,6 +27,15 @@ PARIS = ZoneInfo("Europe/Paris")
 RULE_GROUP = "Trot G"
 RULE_RANK = 3  # 3e cheval du modèle
 RULE_MODEL = "lgbm_market"
+# réunions régionales : absentes du programme national de pmu.fr, souvent sans pari en ligne
+REGIONAL_AUDIENCES = ("LOCAL", "REGIONAL")
+
+
+def national_races(races: pd.DataFrame) -> pd.DataFrame:
+    """Courses des réunions du programme national (audience inconnue : conservée)."""
+    if races.empty or "audience" not in races:
+        return races
+    return races[~races["audience"].isin(REGIONAL_AUDIENCES)]
 
 
 def rule_races(races: pd.DataFrame) -> pd.DataFrame:
@@ -49,7 +58,7 @@ def _races_on(day: date) -> pd.DataFrame:
     r, rc = db.races, db.racecourses
     stmt = (select(r.c.race_id, r.c.reunion_num, r.c.course_num, r.c.label,
                    r.c.conditions_text, r.c.discipline, r.c.distance_m,
-                   r.c.scheduled_start_utc, r.c.result_final,
+                   r.c.scheduled_start_utc, r.c.result_final, r.c.audience,
                    rc.c.name.label("racecourse"))
             .join(rc, rc.c.racecourse_id == r.c.racecourse_id, isouter=True)
             .where(r.c.race_date == day).order_by(r.c.scheduled_start_utc))
@@ -81,9 +90,12 @@ def render() -> None:
                         min_value=dates[-1], max_value=dates[0], format="DD/MM/YYYY",
                         key="selection_date")
     day = day if isinstance(day, date) else dates[0]
-    races = rule_races(_races_on(day))
+    all_races = _races_on(day)
+    national = national_races(all_races)
+    n_regional = len(all_races) - len(national)
+    races = rule_races(national)
     if races.empty:
-        notice("Aucune course de trot G ce jour-là : rien à jouer.")
+        notice("Aucune course de trot G ce jour-là au programme national : rien à jouer.")
         return
 
     rows = []
@@ -117,6 +129,9 @@ def render() -> None:
                     else pred.message),
             })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    if n_regional:
+        st.caption(f"{n_regional} course(s) de réunions régionales exclue(s) : elles ne "
+                   "figurent pas au programme national de pmu.fr.")
     st.caption(
         "Heures de Paris. Le classement tient compte des cotes, il peut changer jusqu'au "
         "départ : consultez la page 10 à 20 minutes avant la course (les données sont "

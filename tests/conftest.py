@@ -22,7 +22,7 @@ START = datetime(2026, 10, 29, 13, 50, tzinfo=UTC)
 
 def programme_payload() -> dict[str, Any]:
     return {"programme": {"date": START_MS, "reunions": [{
-        "numOfficiel": 1,
+        "numOfficiel": 1, "audience": "NATIONAL",
         "hippodrome": {"code": "TST", "libelleCourt": "TESTVILLE",
                        "libelleLong": "Hippodrome de Testville"},
         "pays": {"code": "FRA"},
