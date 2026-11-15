@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 import pandas as pd
-from sqlalchemy import Engine, Table, and_, delete, func, insert, select, update
+from sqlalchemy import Engine, Table, and_, bindparam, delete, func, insert, select, update
 from sqlalchemy.engine import Connection, CursorResult
 
 from horse_intelligence.config.settings import Settings
@@ -198,22 +198,31 @@ class Repository:
 
     @staticmethod
     def _fill_pedigree(conn: Connection, race_id: int, entries: list[EntryRecord],
-                       horse_ids: dict[int, int]) -> int:
-        """Complète, sans rien écraser, la valeur handicap des engagements et les origines
-        des chevaux (champs ajoutés le 15/11/2026, absents des observations antérieures)."""
+                       horse_ids: dict[int, int], fill_handicap: bool = False) -> int:
+        """Complète, sans rien écraser, les origines des chevaux (et, au rattrapage, la valeur
+        handicap des engagements) : champs ajoutés le 15/11/2026. Requêtes groupées : leur
+        nombre ne dépend pas du nombre de partants."""
         re_, h = db.race_entries, db.horses
+        by_hid = {horse_ids[e.num_pmu]: e for e in entries
+                  if e.num_pmu in horse_ids and (e.sire or e.dam or e.dam_sire)}
         n = 0
-        for e in entries:
-            if e.handicap_value is not None:
-                n += conn.execute(update(re_).where(
-                    re_.c.race_id == race_id, re_.c.num_pmu == e.num_pmu,
-                    re_.c.handicap_value.is_(None)).values(
-                        handicap_value=e.handicap_value)).rowcount or 0
-            hid = horse_ids.get(e.num_pmu)
-            if hid is not None and (e.sire or e.dam or e.dam_sire):
-                n += conn.execute(update(h).where(h.c.horse_id == hid, h.c.sire.is_(None))
-                                  .values(sire=e.sire, dam=e.dam,
-                                          dam_sire=e.dam_sire)).rowcount or 0
+        if by_hid:
+            todo = [int(x) for x in conn.execute(select(h.c.horse_id).where(
+                h.c.horse_id.in_(list(by_hid)), h.c.sire.is_(None))).scalars()]
+            if todo:
+                conn.execute(update(h).where(h.c.horse_id == bindparam("hid"))
+                             .values(sire=bindparam("s"), dam=bindparam("d"),
+                                     dam_sire=bindparam("ds")),
+                             [{"hid": i, "s": by_hid[i].sire, "d": by_hid[i].dam,
+                               "ds": by_hid[i].dam_sire} for i in todo])
+                n += len(todo)
+        rows = [{"r": race_id, "n": e.num_pmu, "v": e.handicap_value}
+                for e in entries if e.handicap_value is not None]
+        if fill_handicap and rows:
+            res = conn.execute(update(re_).where(
+                re_.c.race_id == bindparam("r"), re_.c.num_pmu == bindparam("n"),
+                re_.c.handicap_value.is_(None)).values(handicap_value=bindparam("v")), rows)
+            n += res.rowcount or 0
         return n
 
     def races_missing_pedigree(self, start: date, end: date) -> pd.DataFrame:
@@ -234,14 +243,15 @@ class Repository:
             horse_ids = {int(n): int(hid) for n, hid in conn.execute(
                 select(re_.c.num_pmu, re_.c.horse_id).where(re_.c.race_id == race_id)
                 .distinct())}
-            return self._fill_pedigree(conn, race_id, entries, horse_ids)
+            return self._fill_pedigree(conn, race_id, entries, horse_ids, fill_handicap=True)
 
     def save_snapshot(self, race_id: int, snap: RaceSnapshot, payload_id: int | None) -> None:
         after = snap.observed_after_start
         with self.engine.begin() as conn:
             horses = self._resolve(conn, db.horses, "horse_id", ["canonical_name", "birth_year"], {
                 (e.horse_canonical, e.birth_year):
-                    {"display_name": e.horse_name, "breed": e.breed, "sex_last": e.sex}
+                    {"display_name": e.horse_name, "breed": e.breed, "sex_last": e.sex,
+                     "sire": e.sire, "dam": e.dam, "dam_sire": e.dam_sire}
                 for e in snap.entries})
             jockeys = self._people(conn, db.jockeys, "jockey_id",
                                    [e.rider_name for e in snap.entries])
