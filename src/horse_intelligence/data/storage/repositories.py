@@ -196,6 +196,46 @@ class Repository:
         return {tuple(r) for r in conn.execute(
             select(p.c.pool, p.c.bet_type, p.c.combination).where(p.c.race_id == race_id))}
 
+    @staticmethod
+    def _fill_pedigree(conn: Connection, race_id: int, entries: list[EntryRecord],
+                       horse_ids: dict[int, int]) -> int:
+        """Complète, sans rien écraser, la valeur handicap des engagements et les origines
+        des chevaux (champs ajoutés le 15/11/2026, absents des observations antérieures)."""
+        re_, h = db.race_entries, db.horses
+        n = 0
+        for e in entries:
+            if e.handicap_value is not None:
+                n += conn.execute(update(re_).where(
+                    re_.c.race_id == race_id, re_.c.num_pmu == e.num_pmu,
+                    re_.c.handicap_value.is_(None)).values(
+                        handicap_value=e.handicap_value)).rowcount or 0
+            hid = horse_ids.get(e.num_pmu)
+            if hid is not None and (e.sire or e.dam or e.dam_sire):
+                n += conn.execute(update(h).where(h.c.horse_id == hid, h.c.sire.is_(None))
+                                  .values(sire=e.sire, dam=e.dam,
+                                          dam_sire=e.dam_sire)).rowcount or 0
+        return n
+
+    def races_missing_pedigree(self, start: date, end: date) -> pd.DataFrame:
+        """Courses dont au moins un partant n'a pas encore d'origines enregistrées."""
+        r, e, h = db.races, db.race_entries, db.horses
+        stmt = (select(r.c.race_id, r.c.race_date, r.c.reunion_num, r.c.course_num)
+                .where(r.c.race_date.between(start, end), r.c.race_id.in_(
+                    select(e.c.race_id).join(h, h.c.horse_id == e.c.horse_id)
+                    .where(h.c.sire.is_(None))))
+                .order_by(r.c.race_date, r.c.reunion_num, r.c.course_num))
+        with self.engine.connect() as conn:
+            return pd.read_sql(stmt, conn)
+
+    def update_pedigree(self, race_id: int, entries: list[EntryRecord]) -> int:
+        """Rattrapage : origines et valeur handicap d'une course déjà enregistrée."""
+        re_ = db.race_entries
+        with self.engine.begin() as conn:
+            horse_ids = {int(n): int(hid) for n, hid in conn.execute(
+                select(re_.c.num_pmu, re_.c.horse_id).where(re_.c.race_id == race_id)
+                .distinct())}
+            return self._fill_pedigree(conn, race_id, entries, horse_ids)
+
     def save_snapshot(self, race_id: int, snap: RaceSnapshot, payload_id: int | None) -> None:
         after = snap.observed_after_start
         with self.engine.begin() as conn:
@@ -229,7 +269,8 @@ class Repository:
                     owner_id=self._person_id(owners, e.owner_name),
                     age=e.age, sex=e.sex, draw=e.draw, weight_kg=e.weight_kg,
                     weight_carried_kg=e.weight_carried_kg,
-                    handicap_distance_m=e.handicap_distance_m, blinkers=e.blinkers,
+                    handicap_distance_m=e.handicap_distance_m,
+                    handicap_value=e.handicap_value, blinkers=e.blinkers,
                     shoes=e.shoes, status=e.status, form_string=e.form_string,
                     career_starts=e.career_starts, career_wins=e.career_wins,
                     career_places=e.career_places, career_earnings=e.career_earnings,
@@ -237,6 +278,7 @@ class Repository:
                     content_hash=h, payload_id=payload_id))
             if new_entries:
                 conn.execute(insert(re_), new_entries)
+            self._fill_pedigree(conn, race_id, snap.entries, horse_ids)
 
             if after and snap.results:
                 rr = db.race_results

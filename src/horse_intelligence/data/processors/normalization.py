@@ -155,6 +155,10 @@ def entry_from_pmu(p: PmuParticipant, race_date: date,
                          if earnings_in_euros and p.gains_participant
                          and p.gains_participant.gains_carriere is not None
                          else None),
+        handicap_value=p.handicap_valeur,
+        sire=canonical_name(p.nom_pere) if p.nom_pere else None,
+        dam=canonical_name(p.nom_mere) if p.nom_mere else None,
+        dam_sire=canonical_name(p.nom_pere_mere) if p.nom_pere_mere else None,
     )
 
 

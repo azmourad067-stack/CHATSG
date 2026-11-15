@@ -102,6 +102,11 @@ class PmuParticipant(_Tolerant):
     handicap_poids: float | None = Field(default=None, alias="handicapPoids")
     poids_condition_monte: float | None = Field(default=None, alias="poidsConditionMonte")
     handicap_distance: int | None = Field(default=None, alias="handicapDistance")
+    # valeur handicap officielle (galop, en kilos) et origines du cheval
+    handicap_valeur: float | None = Field(default=None, alias="handicapValeur")
+    nom_pere: str | None = Field(default=None, alias="nomPere")
+    nom_mere: str | None = Field(default=None, alias="nomMere")
+    nom_pere_mere: str | None = Field(default=None, alias="nomPereMere")
     oeilleres: str | None = None
     deferre: str | None = None
     ordre_arrivee: int | None = Field(default=None, alias="ordreArrivee")

@@ -122,6 +122,10 @@ horses = Table(
     Column("birth_year", Integer),
     Column("breed", String(80)),
     Column("sex_last", String(20)),
+    # origines (source PMU, noms normalisés)
+    Column("sire", String(200)),
+    Column("dam", String(200)),
+    Column("dam_sire", String(200)),
     UniqueConstraint("canonical_name", "birth_year", name="uq_horse_identity"),
 )
 
@@ -186,6 +190,7 @@ race_entries = Table(
     Column("weight_kg", Float),           # poids du handicap / des conditions
     Column("weight_carried_kg", Float),   # poids réellement porté (après décharge)
     Column("handicap_distance_m", Integer),
+    Column("handicap_value", Float),     # valeur handicap officielle (galop)
     Column("blinkers", String(40)),
     Column("shoes", String(60)),
     Column("status", String(30)),
@@ -431,7 +436,10 @@ def make_engine(database_url: str) -> Engine:
 # Colonnes ajoutées après la création des tables (create_all ne modifie pas une table
 # existante) : (table, colonne, type SQL). En production, la migration Supabase du même
 # nom les crée aussi.
-ADDED_COLUMNS = (("races", "audience", "VARCHAR(20)"),)
+ADDED_COLUMNS = (("races", "audience", "VARCHAR(20)"),
+                 ("horses", "sire", "VARCHAR(200)"), ("horses", "dam", "VARCHAR(200)"),
+                 ("horses", "dam_sire", "VARCHAR(200)"),
+                 ("race_entries", "handicap_value", "FLOAT"))
 
 
 def init_db(engine: Engine) -> None:
