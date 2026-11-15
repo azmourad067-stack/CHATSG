@@ -1,0 +1,45 @@
+# Rattrapage des origines (père, mère, père de la mère) et de la valeur handicap des
+# partants déjà en base (Actions → backfill_pedigree → Run). Une requête par course,
+# reprise automatique. Groupe de concurrence distinct : la collecte continue pendant ce temps.
+name: backfill_pedigree
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Date de début (AAAA-MM-JJ)"
+        required: true
+      end:
+        description: "Date de fin (AAAA-MM-JJ)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill-pedigree-${{ github.event.inputs.start }}
+  cancel-in-progress: false
+
+jobs:
+  pedigree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      HI_DATA_DIR: ${{ github.workspace }}/data_store
+      START: ${{ github.event.inputs.start }}
+      END: ${{ github.event.inputs.end }}
+    steps:
+      - name: Vérifier la configuration
+        run: |
+          test -n "$DATABASE_URL" || { echo "Secret DATABASE_URL absent."; exit 1; }
+          [[ "$START" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Date de début invalide"; exit 1; }
+          [[ "$END" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "Date de fin invalide"; exit 1; }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt "psycopg[binary]>=3.2"
+      - name: Origines et valeur handicap
+        run: python scripts/backfill_pedigree.py --start "$START" --end "$END"

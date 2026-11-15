@@ -166,3 +166,36 @@ def backfill_payouts(pmu: PmuCollector, repo: Repository, start: date, end: date
         repo.save_payouts(int(r["race_id"]), payouts, raw.fetched_at)
         done += 1
     return done, absent, errors
+
+
+def backfill_pedigree(pmu: PmuCollector, repo: Repository, start: date, end: date,
+                      pause_s: float = 0.2) -> tuple[int, int, list[str]]:
+    """Rattrape les origines (père, mère, père de la mère) et la valeur handicap des
+    partants déjà enregistrés, depuis la liste des participants de chaque course.
+    Reprise automatique : seules les courses encore incomplètes sont relues.
+
+    Renvoie (courses complétées, courses absentes chez la source, erreurs)."""
+    import time
+
+    done, absent, errors = 0, 0, []
+    for r in repo.races_missing_pedigree(start, end).to_dict("records"):
+        day, reunion, course = r["race_date"], int(r["reunion_num"]), int(r["course_num"])
+        parts = None
+        for pool in ("OFFLINE", "INTERNET"):  # certaines courses n'existent qu'en INTERNET
+            try:
+                parts = pmu.parse_participants(
+                    pmu.fetch_participants_raw(day, reunion, course, pool)).participants
+                break
+            except NotFoundError:
+                continue
+            except CollectorError as exc:
+                errors.append(f"{day} R{reunion}C{course}: {exc}")
+                break
+        if parts is None:
+            absent += 1
+            continue
+        repo.update_pedigree(int(r["race_id"]), [entry_from_pmu(p, day) for p in parts])
+        done += 1
+        if pause_s:
+            time.sleep(pause_s)
+    return done, absent, errors

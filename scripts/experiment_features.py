@@ -1,6 +1,6 @@
 """Expérience « variables v2 » : vitesse, ferrure, aptitudes, forme récente.
 
-Usage : python scripts/experiment_features.py [--stage v2|v3]
+Usage : python scripts/experiment_features.py [--stage v2|v3|v4]
   v2 : variables d'origine contre v1 + v2 ; v3 : production (v1 + v2) contre + v3
   (terrain, changement de catégorie et de distance, couple cheval / driver, entraîneur sur
   l'hippodrome).
@@ -23,7 +23,7 @@ def _pct(x: float) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--stage", choices=["v2", "v3"], default="v2")
+    parser.add_argument("--stage", choices=["v2", "v3", "v4"], default="v2")
     args = parser.parse_args()
     configure_logging()
     rep = run_features_experiment(build_context().repo.engine, stage=args.stage)

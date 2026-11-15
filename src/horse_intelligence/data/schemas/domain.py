@@ -60,6 +60,10 @@ class EntryRecord:
     career_wins: int | None
     career_places: int | None
     career_earnings: float | None
+    handicap_value: float | None = None   # valeur handicap officielle (galop)
+    sire: str | None = None               # père
+    dam: str | None = None                # mère
+    dam_sire: str | None = None           # père de la mère
 
     @property
     def is_runner(self) -> bool:

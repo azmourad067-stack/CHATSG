@@ -56,7 +56,8 @@ def test_snapshot_writes_are_batched(repo: Repository) -> None:
 
     repo.save_snapshot = counted  # type: ignore[method-assign]
     ingest_day(RACE_DAY, FakePmu(START + timedelta(hours=2), True), repo)
-    assert calls and max(calls) <= 24, calls  # 4 référentiels × 3 + 8, au lieu de ~10 par partant
+    # 4 référentiels × 3 + 8 + 1 (origines manquantes), au lieu de ~10 par partant
+    assert calls and max(calls) <= 25, calls
 
 
 def test_raw_payloads_are_traceable(repo: Repository) -> None:

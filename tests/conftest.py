@@ -48,6 +48,8 @@ def participants_payload(with_results: bool = True) -> dict[str, Any]:
             "nombreVictoires": 3, "nombrePlaces": 8,
             "gainsParticipant": {"gainsCarriere": 8500000}, "handicapDistance": 2700,
             "deferre": "DEFERRE_ANTERIEURS_POSTERIEURS",
+            "nomPere": f"Père {num}", "nomMere": f"Mère {num}", "nomPereMere": "Grand-Père",
+            "handicapValeur": 50.0 + num,
             "dernierRapportReference": {"typePari": "SIMPLE_GAGNANT", "rapport": ref,
                                         "typeRapport": "REFERENCE",
                                         "dateRapport": START_MS - 30 * 60_000},
