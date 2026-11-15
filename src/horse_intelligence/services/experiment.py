@@ -717,7 +717,9 @@ def run_betting2_experiment(engine: Engine, model_col: str = INCUMBENT,
 
 
 TUNING_CONFIGS: dict[str, tuple[dict[str, Any], int]] = {
-    # nom -> (paramètres LightGBM modifiés, nombre d'arbres) ; « actuel » = production
+    # nom -> (paramètres LightGBM modifiés par rapport à DEFAULT_PARAMS, nombre d'arbres) ;
+    # « actuel » = réglage de production jusqu'au 15/11/2026 (le gagnant « plus_profond »
+    # est depuis RACE_PARAMS / RACE_NUM_ROUNDS)
     "actuel": ({}, 300),
     "plus_profond": ({"num_leaves": 31, "min_data_in_leaf": 60}, 400),
     "plus_lent": ({"learning_rate": 0.015}, 600),

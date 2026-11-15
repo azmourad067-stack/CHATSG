@@ -24,6 +24,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "verbose": -1, "seed": 42, "deterministic": True, "num_threads": 2,
 }
 NUM_ROUNDS = 300
+# Réglage du modèle de course (gagnant), adopté le 15/11/2026 : l'expérience `tuning`
+# (22 117 courses, 104 plis) l'a choisi sur la 1re moitié des plis ; sur la 2nde, il bat
+# l'ancien réglage (DEFAULT_PARAMS, 300 arbres) de −0,0038 [IC 95 % −0,0049 ; −0,0027].
+# Le modèle placé et les modèles d'expérience gardent DEFAULT_PARAMS (non testés ainsi).
+RACE_PARAMS: dict[str, Any] = {**DEFAULT_PARAMS, "num_leaves": 31, "min_data_in_leaf": 60}
+RACE_NUM_ROUNDS = 400
 
 
 def _logit(p: FloatArray) -> FloatArray:
@@ -36,8 +42,8 @@ class LgbmRaceModel:
     features: list[str]
     categorical: list[str]
     with_market: bool = False
-    params: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_PARAMS))
-    num_rounds: int = NUM_ROUNDS
+    params: dict[str, Any] = field(default_factory=lambda: dict(RACE_PARAMS))
+    num_rounds: int = RACE_NUM_ROUNDS
     booster: Any = None
     calibrator: ConditionalLogit | None = None
     categories: dict[str, list[str]] = field(default_factory=dict)

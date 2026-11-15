@@ -126,3 +126,14 @@ def test_tuning_experiment_end_to_end(repo: Repository) -> None:
 @pytest.mark.parametrize("bet", ["win", "place"])
 def test_rule_grid_sizes(bet: str) -> None:
     assert len(pm.rule_grid(bet, "predicted")) == (36 if bet == "win" else 20)
+
+
+def test_race_model_uses_tuned_settings_place_model_does_not() -> None:
+    from horse_intelligence.models.lightgbm_model import LgbmRaceModel
+    from horse_intelligence.models.place_model import PlaceModel
+
+    race = LgbmRaceModel(["x"], [])
+    assert race.params["num_leaves"] == 31 and race.params["min_data_in_leaf"] == 60
+    assert race.num_rounds == 400
+    place = PlaceModel(["x"], [])
+    assert place.params["num_leaves"] == 15 and place.num_rounds == 300
