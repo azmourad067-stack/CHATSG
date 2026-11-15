@@ -112,6 +112,7 @@ def race_from_pmu(day: date, reunion: PmuReunion, course: PmuCourse) -> RaceReco
         result_final=bool(course.arrivee_definitive) or (status or "") in FINISHED_STATUSES,
         going_label=course.penetrometre.intitule if course.penetrometre else None,
         penetrometer=course.penetrometre.valeur_mesure if course.penetrometre else None,
+        audience=reunion.audience,
     )
 
 

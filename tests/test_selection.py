@@ -60,3 +60,34 @@ def test_frame_cache_is_rebuilt_when_new_data_arrives(monkeypatch) -> None:  # t
     race_analysis._frame(day, "v1|19:36", True)
     assert len(calls) == 2  # nouvelle collecte : reconstruit
     st.cache_resource.clear()
+
+
+def test_regional_reunions_are_excluded() -> None:
+    from horse_intelligence.frontend.selection import national_races
+
+    races = pd.DataFrame({"race_id": [1, 2, 3, 4],
+                          "audience": ["NATIONAL", "LOCAL", "REGIONAL", None]})
+    # audience inconnue (courses collectées avant le 15/11/2026) : conservée
+    assert national_races(races)["race_id"].tolist() == [1, 4]
+
+
+def test_audience_is_collected_and_old_databases_are_upgraded(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    from sqlalchemy import create_engine, inspect, text
+    from tests.conftest import RACE_DAY, programme_payload
+
+    from horse_intelligence.data.processors.normalization import race_from_pmu
+    from horse_intelligence.data.schemas.pmu import PmuProgramme
+    from horse_intelligence.data.storage.database import init_db
+
+    reunion = PmuProgramme.model_validate(programme_payload()).programme.reunions[0]
+    assert race_from_pmu(RACE_DAY, reunion, reunion.courses[0]).audience == "NATIONAL"
+    # base créée avant l'ajout de la colonne : init_db l'ajoute sans perdre de données
+    engine = create_engine(f"sqlite:///{tmp_path / 'old.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE races (race_id INTEGER PRIMARY KEY, "
+                          "race_date DATE NOT NULL)"))
+        conn.execute(text("INSERT INTO races VALUES (1, '2026-11-01')"))
+    init_db(engine)
+    assert "audience" in {c["name"] for c in inspect(engine).get_columns("races")}
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT count(*) FROM races")).scalar_one() == 1
