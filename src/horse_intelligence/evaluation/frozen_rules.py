@@ -51,7 +51,8 @@ def rule_bets(frame: pd.DataFrame, payouts: pd.DataFrame, model_col: str,
     """Paris de la règle (1 € chacun) : date, course, numéro joué et gain net au rapport
     officiel de la masse Internet (−1 si le cheval ne paie pas)."""
     lookup = payout_lookup(payouts, "INTERNET")
-    paid = {k[0] for k in lookup if k[1] == "SIMPLE_GAGNANT"}
+    # courses où le pari existe (rapport collecté) : un cheval non payé y perd sa mise
+    paid = {k[0] for k in lookup if k[1] == rule.bet_type}
     f = add_segments(frame[frame["race_id"].isin(paid)], model_col)
     sub = f[f["rang_modèle"] == rule.rank]
     if rule.quinte_only:

@@ -113,3 +113,4 @@ def test_frozen_rule_split_by_audience(repo) -> None:  # type: ignore[no-untyped
     tot = rep["rule"]["toutes"]["total"]["n_bets"]
     assert tot == (rep["rule"]["nationales"]["total"]["n_bets"]
                    + rep["rule"]["régionales"]["total"]["n_bets"])
+    assert set(rep["rule_place"]) == {"toutes", "nationales", "régionales"}
