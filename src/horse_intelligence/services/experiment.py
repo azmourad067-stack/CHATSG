@@ -359,9 +359,9 @@ def run_features_experiment(engine: Engine, min_train_days: int = 21, test_days:
 
     t0 = time.perf_counter()
     raw = load_raw(engine)
-    ds = build_dataset(raw)
+    ds = build_dataset(raw, with_v4=stage == "v4")
     if not audit_source_aggregates(ds.frame).passed:
-        ds = build_dataset(raw, use_source_aggregates=False)
+        ds = build_dataset(raw, use_source_aggregates=False, with_v4=stage == "v4")
     frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
     base_runners = model_runners()
     importances: dict[str, pd.Series] = {}

@@ -484,7 +484,11 @@ def _add_v4_features(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=["_sire", "_damsire", "_disc", "_dband"]).copy()
 
 
-def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True) -> Dataset:
+def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = True,
+                  with_v4: bool = False) -> Dataset:
+    """`with_v4` : calcule aussi les variables v4 (origines, valeur handicap). Non adoptées
+    (expérience `features4` du 15/11/2026 : gain non significatif) et coûteuses en mémoire
+    (+70 % au pic) : seulement pour les expériences, jamais dans l'application."""
     races = raw["races"].copy()
     races["decision_time"] = races["scheduled_start_utc"] - DECISION_OFFSET
     races = races.merge(_going(raw.get("going")), on="race_id", how="left")
@@ -554,10 +558,11 @@ def build_dataset(raw: dict[str, pd.DataFrame], use_source_aggregates: bool = Tr
 
     df = _add_v2_features(df)
     df = _add_v3_features(df)
-    if raw.get("horses") is not None and not raw["horses"].empty:
-        df = df.merge(raw["horses"][["horse_id", "sire", "dam_sire"]], on="horse_id",
-                      how="left")
-    df = _add_v4_features(df)
+    if with_v4:
+        if raw.get("horses") is not None and not raw["horses"].empty:
+            df = df.merge(raw["horses"][["horse_id", "sire", "dam_sire"]], on="horse_id",
+                          how="left")
+        df = _add_v4_features(df)
 
     # --- variables relatives à la course
     for c in RELATIVE_SOURCES:
