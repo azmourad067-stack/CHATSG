@@ -419,7 +419,8 @@ FROZEN_SPLIT = "2025-11-19"  # fin de l'année de validation des règles figées
 
 def frozen_rule_by_period(frame: pd.DataFrame, payouts: pd.DataFrame, models: tuple[str, ...],
                           rule_value: str = "Trot G", n_boot: int = 4000,
-                          seed: int = 0) -> dict[str, dict[str, dict[str, Any]]]:
+                          seed: int = 0, bet_type: str | None = None
+                          ) -> dict[str, dict[str, dict[str, Any]]]:
     """Règle figée (par défaut « 3e du modèle, gagnant, trot G ») appliquée avec chaque
     modèle, sur l'année de validation (≤ FROZEN_SPLIT), l'année de découverte et le total."""
     from datetime import date as _date
@@ -427,6 +428,8 @@ def frozen_rule_by_period(frame: pd.DataFrame, payouts: pd.DataFrame, models: tu
     from horse_intelligence.evaluation.frozen_rules import FROZEN_RULES, rule_bets
 
     rule = next(r for r in FROZEN_RULES if r.value == rule_value)
+    if bet_type is not None:  # même règle jouée sur un autre pari (ex. placé)
+        rule = replace(rule, bet_type=bet_type)
     split = _date.fromisoformat(FROZEN_SPLIT)
     rng = np.random.default_rng(seed)
     out: dict[str, dict[str, dict[str, Any]]] = {}
@@ -831,4 +834,8 @@ def run_frozen_by_audience(engine: Engine, model_col: str = INCUMBENT,
                "régionales": frame[frame["groupe_audience"] == "régionales"]}
     out["rule"] = {name: frozen_rule_by_period(f, payouts, (model_col,), rule_value)[model_col]
                    for name, f in subsets.items() if not f.empty}
+    # même cheval (3e du modèle) joué en simple placé (demande du 16/11/2026)
+    out["rule_place"] = {name: frozen_rule_by_period(f, payouts, (model_col,), rule_value,
+                                                     bet_type="SIMPLE_PLACE")[model_col]
+                         for name, f in subsets.items() if not f.empty}
     return out

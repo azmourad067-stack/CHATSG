@@ -17,16 +17,19 @@ def main() -> int:
     rep = run_frozen_by_audience(build_context().repo.engine)
     print(f"Période {rep['period'][0]} → {rep['period'][1]} ; courses avec cotes : "
           f"{rep['n_races']}")
-    print("\nRègle figée « 3e du modèle, gagnant, trot G » (lgbm_market) :")
-    for name, periods in rep["rule"].items():
-        parts = []
-        for p, r in periods.items():
-            if r["n_bets"]:
-                parts.append(f"{p} {100 * r['roi']:+.1f} % ({r['n_bets']} paris, IC "
-                             f"[{100 * r['roi_ci'][0]:+.1f} % ; {100 * r['roi_ci'][1]:+.1f} %])")
-            else:
-                parts.append(f"{p} — (0 pari)")
-        print(f"  {name:11s} " + " | ".join(parts))
+    for key, bet in (("rule", "gagnant"), ("rule_place", "placé")):
+        print(f"\nRègle « 3e du modèle, {bet}, trot G » (lgbm_market) :")
+        for name, periods in rep[key].items():
+            parts = []
+            for p, r in periods.items():
+                if r["n_bets"]:
+                    parts.append(
+                        f"{p} {100 * r['roi']:+.1f} % ({r['n_bets']} paris, réussite "
+                        f"{100 * r['hit_rate']:.0f} %, IC [{100 * r['roi_ci'][0]:+.1f} % ; "
+                        f"{100 * r['roi_ci'][1]:+.1f} %])")
+                else:
+                    parts.append(f"{p} — (0 pari)")
+            print(f"  {name:11s} " + " | ".join(parts))
     return 0
 
 

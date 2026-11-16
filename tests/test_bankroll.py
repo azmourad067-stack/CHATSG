@@ -70,3 +70,23 @@ def test_rule_bets_matches_frozen_rule_selection() -> None:
     assert bets["race_id"].tolist() == [2, 1]
     assert bets["num_pmu"].tolist() == [3, 3]
     assert bets["profit"].tolist() == [-1.0, 6.5]
+
+
+def test_rule_bets_in_place_uses_place_payouts() -> None:
+    from dataclasses import replace
+
+    rule = replace(next(r for r in FROZEN_RULES if r.value == "Trot G"), bet_type="SIMPLE_PLACE")
+    frame = pd.DataFrame({
+        "race_id": [1, 1, 1, 2, 2, 2], "num_pmu": [1, 2, 3, 1, 2, 3],
+        "race_date": pd.to_datetime(["2025-01-02"] * 3 + ["2025-01-01"] * 3).date,
+        "p": [0.5, 0.3, 0.2, 0.6, 0.3, 0.1], "n_runners": 3, "distance_m": 2100,
+        "reunion_num": 1, "label": "PRIX X", "conditions_text": "Course G - Attelé",
+        "discipline": "trot_attele"})
+    payouts = pd.DataFrame({
+        "race_id": [1, 1, 2, 2], "pool": "INTERNET",
+        "bet_type": ["SIMPLE_PLACE", "SIMPLE_PLACE", "SIMPLE_PLACE", "SIMPLE_GAGNANT"],
+        "combination": ["3", "1", "1", "1"], "payout_per_eur": [1.8, 1.1, 1.2, 1.4]})
+    bets = rule_bets(frame, payouts, "p", rule)
+    # 3e du modèle = n° 3 : placé dans la course 1 (1,80 €), non placé dans la course 2
+    assert bets["race_id"].tolist() == [2, 1]
+    assert bets["profit"].round(2).tolist() == [-1.0, 0.8]
