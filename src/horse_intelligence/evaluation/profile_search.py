@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -193,7 +193,8 @@ def search(f: pd.DataFrame, profiles: list[Profile] | None = None,
         "positive_both": [
             {"label": prof.label(), "roi_1": float(r1), "roi_2": float(r2),
              "total": evaluate(f, prof)}
-            for prof, r1, r2 in zip(pos["profile"], pos["roi_1"], pos["roi_2"], strict=True)],
+            for prof, r1, r2 in zip(cast(list[Profile], pos["profile"].tolist()),
+                                    pos["roi_1"].tolist(), pos["roi_2"].tolist(), strict=True)],
         "example": {"label": EXAMPLE.label(), "first": evaluate(first, EXAMPLE),
                     "second": evaluate(second, EXAMPLE), "total": evaluate(f, EXAMPLE)},
     }
