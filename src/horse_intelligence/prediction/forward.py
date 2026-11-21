@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
 import pandas as pd
 from sqlalchemy import Engine, and_, insert, select
@@ -31,8 +32,11 @@ def _input_hash(race: pd.DataFrame) -> str:
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def record_upcoming(engine: Engine, window: timedelta, now: datetime | None = None) -> int:
-    """Enregistre une prédiction pour chaque course partant dans la fenêtre."""
+def record_upcoming(engine: Engine, window: timedelta, now: datetime | None = None,
+                    models: dict[str, Any] | None = None,
+                    frames: dict[object, pd.DataFrame] | None = None) -> int:
+    """Enregistre une prédiction pour chaque course partant dans la fenêtre. `models` et
+    `frames` (par jour) peuvent être fournis déjà construits pour éviter de les refaire."""
     now = now or datetime.now(UTC)
     r = db.races
     with engine.connect() as conn:
@@ -40,10 +44,10 @@ def record_upcoming(engine: Engine, window: timedelta, now: datetime | None = No
             r.c.scheduled_start_utc > now, r.c.scheduled_start_utc <= now + window))).all()
     if not upcoming:
         return 0
-    models = load_models(engine)
+    models = models if models is not None else load_models(engine)
     if not models:
         return 0
-    frames: dict[object, pd.DataFrame] = {}
+    frames = frames if frames is not None else {}
     saved = 0
     for race_id, race_date in upcoming:
         if race_date not in frames:
@@ -77,3 +81,37 @@ def _f(v: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return None if pd.isna(x) else x
+
+
+def precompute_day(engine: Engine, day: date, now: datetime | None = None,
+                   models: dict[str, Any] | None = None,
+                   frames: dict[object, pd.DataFrame] | None = None) -> int:
+    """Calcule et range les probabilités de toutes les courses de `day` pour l'interface,
+    s'il reste au moins une course à courir. Renvoie le nombre de courses rangées."""
+    from horse_intelligence.prediction import day_store
+    from horse_intelligence.prediction.race_predictor import predict_day
+
+    now = now or datetime.now(UTC)
+    r = db.races
+    with engine.connect() as conn:
+        races = conn.execute(select(r.c.race_id, r.c.race_date, r.c.scheduled_start_utc)
+                             .where(r.c.race_date == day)).all()
+    if not races or not any(x.scheduled_start_utc is not None
+                            and _utc(x.scheduled_start_utc) > now for x in races):
+        return 0
+    models = models if models is not None else load_models(engine)
+    if not models:
+        return 0
+    # clé lue AVANT le calcul : une donnée arrivée pendant le calcul la rend périmée
+    key = day_store.data_key(engine)
+    frames = frames if frames is not None else {}
+    if day not in frames:
+        frames[day] = build_frame(engine, day, models_use_source_aggregates(models))
+    ids = [int(x.race_id) for x in races]
+    preds = predict_day(engine, ids, frames[day], models)
+    return day_store.store(engine, preds, {int(x.race_id): x.race_date for x in races}, key,
+                           now)
+
+
+def _utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)

@@ -201,3 +201,42 @@ def test_predict_day_matches_predict_race(trained) -> None:  # type: ignore[no-u
         one_e = repo.entries_as_of(rid)
         assert grouped[grouped["race_id"] == rid]["num_pmu"].tolist() == \
             one_e["num_pmu"].tolist()
+
+
+def test_precomputed_day_predictions_round_trip(trained) -> None:  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime
+
+    from horse_intelligence.prediction import day_store
+    from horse_intelligence.prediction.forward import precompute_day
+    from horse_intelligence.prediction.race_predictor import (
+        build_frame,
+        load_models,
+        models_use_source_aggregates,
+        predict_day,
+    )
+
+    repo, _ = trained
+    day = START_DAY + timedelta(days=29)
+    ids = [int(x) for x in repo.races_on(day)["race_id"]]
+    before_start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+    # plus aucune course à courir : rien n'est calculé
+    assert precompute_day(repo.engine, day, now=datetime(2100, 1, 1, tzinfo=UTC)) == 0
+    assert precompute_day(repo.engine, day, now=before_start) == len(ids)
+    key = day_store.data_key(repo.engine)
+    stored = day_store.load(repo.engine, ids, key)
+    assert stored is not None and set(stored) == set(ids)
+    models = load_models(repo.engine)
+    live = predict_day(repo.engine, ids, build_frame(repo.engine, day,
+                                                     models_use_source_aggregates(models)),
+                       models)
+    cols = ["num_pmu", "horse_id", "p_win", "rank", "mkt_odds", "mkt_prob"]
+    for rid in ids:
+        assert stored[rid].primary == live[rid].primary
+        pd.testing.assert_frame_equal(stored[rid].table[cols], live[rid].table[cols],
+                                      check_dtype=False)
+    # autre clé (nouvelle donnée, nouveau modèle) ou course manquante : jamais utilisé
+    assert day_store.load(repo.engine, ids, key + "x") is None
+    assert day_store.load(repo.engine, [*ids, 999999], key) is None
+    # nouveau calcul : remplace, ne duplique pas
+    assert precompute_day(repo.engine, day, now=before_start) == len(ids)
+    assert day_store.load(repo.engine, ids, key) is not None
