@@ -76,3 +76,13 @@ def test_profile_experiment_end_to_end(repo) -> None:  # type: ignore[no-untyped
     train_and_evaluate(repo.engine, min_train_days=12, test_days=4, calib_days=4, n_members=1)
     rep = run_profile_search(repo.engine)
     assert isinstance(rep["success"], bool)
+
+
+def test_followed_profiles_are_the_app_profile_and_its_place_variants() -> None:
+    from horse_intelligence.frontend import selection as sel
+
+    win, place, place_all = ps.FOLLOWED
+    assert win.rank == sel.PROFILE_RANKS and win.odds == sel.PROFILE_ODDS
+    assert win.runners[0] == sel.PROFILE_MIN_RUNNERS and win.bet == "gagnant" and win.edge
+    assert (place.bet, place.edge, place_all.bet, place_all.edge) == ("placé", True,
+                                                                      "placé", False)
