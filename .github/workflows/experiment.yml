@@ -19,6 +19,7 @@
 #   profiles : profils de course (rang × cote × discipline × partants), gagnant / placé
 #   grand_search : ~8 600 stratégies (simples + combinés), découverte / validation / test final
 #   forward_rules : bilan des règles figées le 21/11/2026 sur les courses postérieures
+#   profile_app : temps de calcul de la page Sélection du jour (diagnostic)
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -29,7 +30,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -129,6 +130,9 @@ jobs:
       - name: Bilan des règles figées le 21/11/2026 (courses postérieures)
         if: env.EXPERIMENT == 'forward_rules'
         run: python scripts/validate_forward_rules.py
+      - name: Temps de calcul de la page Sélection du jour
+        if: env.EXPERIMENT == 'profile_app'
+        run: python scripts/profile_app.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py
