@@ -839,3 +839,57 @@ def run_frozen_by_audience(engine: Engine, model_col: str = INCUMBENT,
                                                      bet_type="SIMPLE_PLACE")[model_col]
                          for name, f in subsets.items() if not f.empty}
     return out
+
+
+TIERCE_STRATEGIES = ("6 premiers du modèle (combiné)", "20 trios les plus probables",
+                     "6 premiers du marché (repère)")
+
+
+def run_tierce_quinte(engine: Engine, model_col: str = INCUMBENT,
+                      place_col: str = "place_market") -> dict[str, Any]:
+    """20 combinaisons de tiercé par course du quinté (pas de trio sur cette course), sur
+    les prédictions hors échantillon du dernier entraînement, réglées aux rapports officiels
+    ordre / désordre. Critère fixé AVANT de voir les résultats : une des deux stratégies du
+    modèle est rentable sur la 2nde moitié, IC 95 % du ROI entièrement > 0."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import tierce_quinte as tq
+    from horse_intelligence.models.place_model import pl_place_column
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
+                                   "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
+    quinte = set(payouts.loc[payouts["bet_type"] == "QUINTE_PLUS", "race_id"].astype(int))
+    cols = [model_col, "mkt_prob", *([place_col] if place_col in pred else [])]
+    strengths = place_col if place_col in pred else model_col
+    f = pred[pred["race_id"].isin(quinte)]
+    if f.empty:
+        return {"n_quinte": len(quinte), "n_quinte_predicted": 0, "n_quinte_settled": 0,
+                "strengths": strengths, "results": {}, "success": False}
+    f = _with_market(f)
+    f = f[f.groupby("race_id")[cols].transform(lambda s: s.notna().all()).all(axis=1)].copy()
+    f["_pl"] = pl_place_column(f, place_col) if place_col in f else f[model_col]
+    paid = tq.tierce_results(payouts)
+    rng = np.random.default_rng(0)
+
+    def nums(g: pd.DataFrame) -> np.ndarray:
+        return g["num_pmu"].to_numpy()
+
+    makers = {
+        TIERCE_STRATEGIES[0]: lambda g: tq.top6_tickets(nums(g), g[model_col].to_numpy()),
+        TIERCE_STRATEGIES[1]: lambda g: tq.proba20_tickets(
+            nums(g), g["_pl"].to_numpy(), g[model_col].to_numpy(), rng),
+        TIERCE_STRATEGIES[2]: lambda g: tq.top6_tickets(nums(g), g["mkt_prob"].to_numpy()),
+    }
+    results = {name: tq.by_period(tq.simulate(f, paid, make)) for name, make in makers.items()}
+    return {
+        "n_quinte": len(quinte), "n_quinte_predicted": int(f["race_id"].nunique()),
+        "n_quinte_settled": len(set(f["race_id"]) & set(paid)),
+        "strengths": strengths, "results": results,
+        "success": any(results[s].get("2nde moitié", {}).get("roi_ci", (0, 0))[0] > 0
+                       for s in TIERCE_STRATEGIES[:2]),
+    }

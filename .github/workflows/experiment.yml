@@ -14,6 +14,7 @@
 #   betting2 : combinés avec le modèle placé + espérance au rapport final prévu
 #   tuning : réglage de LightGBM choisi sur la 1re moitié des plis, jugé sur la 2nde
 #   tuning_large : réglage « large » contre la production, sur chaque moitié des plis
+#   tierce_quinte : 20 combinaisons de tiercé par quinté (rattrape d'abord les rapports désordre)
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -24,7 +25,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -106,6 +107,12 @@ jobs:
       - name: Réglage « large » contre la production (walk-forward)
         if: env.EXPERIMENT == 'tuning_large'
         run: python scripts/experiment_tuning.py --large
+      - name: Rapports désordre des quintés (rattrapage idempotent)
+        if: env.EXPERIMENT == 'tierce_quinte'
+        run: python scripts/backfill_desordre.py
+      - name: Tiercé du quinté, 20 combinaisons
+        if: env.EXPERIMENT == 'tierce_quinte'
+        run: python scripts/experiment_tierce_quinte.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py

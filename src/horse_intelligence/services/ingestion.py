@@ -199,3 +199,25 @@ def backfill_pedigree(pmu: PmuCollector, repo: Repository, start: date, end: dat
         if pause_s:
             time.sleep(pause_s)
     return done, absent, errors
+
+
+def backfill_quinte_desordre(pmu: PmuCollector, repo: Repository,
+                             pool: str = "INTERNET") -> tuple[int, int, list[str]]:
+    """Rattrape les rapports « désordre » (tiercé, quarté+, quinté+) des courses du quinté :
+    avant le 21/11/2026, la ligne désordre était confondue avec l'ordre (même combinaison)
+    et n'était pas stockée. Reprise automatique (seules les courses sans TIERCE_DESORDRE)."""
+    done, absent, errors = 0, 0, []
+    for r in repo.quinte_races_missing_bet("TIERCE_DESORDRE", pool).to_dict("records"):
+        try:
+            raw = pmu.fetch_rapports_raw(r["race_date"], int(r["reunion_num"]),
+                                         int(r["course_num"]), pool)
+            payouts = payouts_from_pmu(pmu.parse_rapports(raw), pool, None)
+        except NotFoundError:
+            absent += 1
+            continue
+        except CollectorError as exc:
+            errors.append(f"{r['race_date']} R{r['reunion_num']}C{r['course_num']}: {exc}")
+            continue
+        repo.save_payouts(int(r["race_id"]), payouts, raw.fetched_at)
+        done += 1
+    return done, absent, errors
