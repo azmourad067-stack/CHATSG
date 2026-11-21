@@ -1,11 +1,11 @@
 """Sélection du jour : deux règles NON validées, appliquées telles qu'elles ont été définies.
 
 1. « 3e du modèle, simple gagnant, trot G » (ci-dessous).
-2. Profil « 4e à 6e du modèle, cote 20 à 50, trot attelé, 15 partants ou plus, modèle >
-   marché, simple gagnant », ajouté à la demande de l'utilisateur le 21/11/2026. Meilleur
-   des 3 360 profils sur la 1re moitié (nov. 2024 → nov. 2025 : +50,5 %, 208 paris), il a
-   donné −51,1 % sur la 2nde moitié (nov. 2025 → nov. 2026, 319 paris) : −11 % sur deux
-   ans (527 paris). Aucun avantage démontré.
+2. « Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, espérance ≥ +10 %, gagnant »,
+   figée le 21/11/2026 (evaluation/forward_rules.py) à la demande de l'utilisateur : seule
+   famille positive sur les trois périodes de la grande recherche, mais NON significative.
+   Le profil « outsiders attelé », ajouté puis retiré le 21/11/2026, n'est plus affiché :
+   −70 % sur les six derniers mois de la grande recherche.
 
 Règle 1 :
 
@@ -29,6 +29,7 @@ import streamlit as st
 from sqlalchemy import select
 
 from horse_intelligence.data.storage import database as db
+from horse_intelligence.evaluation.forward_rules import VALUE_46, rule_picks
 from horse_intelligence.evaluation.segment_analysis import race_group
 from horse_intelligence.frontend.components.cards import notice
 from horse_intelligence.frontend.race_analysis import _predict
@@ -41,11 +42,6 @@ RULE_MODEL = "lgbm_market"
 # réunions régionales : absentes du programme national de pmu.fr, souvent sans pari en ligne
 REGIONAL_AUDIENCES = ("LOCAL", "REGIONAL")
 
-# profil « outsiders attelé » (experiment profiles du 21/11/2026)
-PROFILE_DISCIPLINE = "trot_attele"
-PROFILE_RANKS = (4, 6)            # 4e à 6e du modèle
-PROFILE_ODDS = (20.0, 50.0)       # cote de référence > 20 et ≤ 50
-PROFILE_MIN_RUNNERS = 15
 
 
 def national_races(races: pd.DataFrame) -> pd.DataFrame:
@@ -69,18 +65,6 @@ def rule_pick(table: pd.DataFrame) -> pd.Series | None:
     if len(table) < RULE_RANK:
         return None
     return table.sort_values("p_win", ascending=False, kind="stable").iloc[RULE_RANK - 1]
-
-
-def profile_picks(table: pd.DataFrame) -> pd.DataFrame:
-    """Chevaux du profil dans une course (déjà filtrée sur la discipline) : 4e à 6e du
-    modèle, cote de référence dans ]20 ; 50], probabilité du modèle > celle du marché."""
-    if len(table) < PROFILE_MIN_RUNNERS or table["mkt_odds"].isna().any():
-        return table.iloc[0:0]
-    t = table.sort_values("p_win", ascending=False, kind="stable").reset_index(drop=True)
-    t["model_rank"] = range(1, len(t) + 1)
-    lo, hi = PROFILE_RANKS
-    return t[t["model_rank"].between(lo, hi) & (t["mkt_odds"] > PROFILE_ODDS[0])
-             & (t["mkt_odds"] <= PROFILE_ODDS[1]) & (t["p_win"] > t["mkt_prob"])]
 
 
 def _races_on(day: date) -> pd.DataFrame:
@@ -132,12 +116,11 @@ def render() -> None:
     all_races = _races_on(day)
     national = national_races(all_races)
     n_regional = len(all_races) - len(national)
-    tab_g, tab_profile = st.tabs(["3e du modèle, trot G",
-                                  "Outsiders attelé (4e-6e, cote 20-50)"])
+    tab_g, tab_value = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)"])
     with tab_g:
         _render_trot_g(day, national, n_regional)
-    with tab_profile:
-        _render_profile(day, national, n_regional)
+    with tab_value:
+        _render_value(day, national, n_regional)
     st.caption(
         "Heures de Paris. Le classement tient compte des cotes, il peut changer jusqu'au "
         "départ : consultez la page 10 à 20 minutes avant la course (les données sont "
@@ -186,27 +169,30 @@ def _render_trot_g(day: date, national: pd.DataFrame, n_regional: int) -> None:
                    "figurent pas au programme national de pmu.fr.")
 
 
-def _render_profile(day: date, national: pd.DataFrame, n_regional: int) -> None:
-    st.error("Profil NON validé, et perdant sur la période la plus récente : « 4e à 6e du "
-             "modèle, cote 20 à 50, trot attelé, 15 partants ou plus, modèle plus "
-             "optimiste que la cote, simple gagnant ». Meilleur des 3 360 profils sur la "
-             "1re année testée (+50,5 %, 208 paris), il a donné −51,1 % l'année suivante "
-             "(319 paris, seulement 3 % de gagnants) : −11 % sur deux ans. C'est un pari "
-             "sur de gros outsiders : de longues séries sans gain (jusqu'à 115 paris de "
-             "suite) sont normales. À suivre de façon fictive, ou avec de très petites "
-             "mises fixes.")
-    races = national[national["discipline"] == PROFILE_DISCIPLINE]
-    if races.empty:
-        notice("Aucune course de trot attelé ce jour-là au programme national.")
+def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
+    rule = VALUE_46
+    st.warning(
+        "Règle NON validée, figée le 21/11/2026 pour être jugée sur les courses à venir : "
+        "« 4e à 6e du modèle, cote 9 à 20, 10 à 14 partants, espérance du modèle d'au moins "
+        "+10 %, simple gagnant ». Sur deux ans de tests elle a donné +22,6 %, puis +41,8 %, "
+        "puis +22,0 % sur les six derniers mois, mais avec une marge d'erreur de −29 % à "
+        "+76 % : c'est peut-être de la chance (8 640 stratégies essayées). Environ 800 "
+        "paris par an, environ 1 gagnant sur 9. À suivre de façon fictive, ou avec de très "
+        "petites mises fixes.")
+    if national.empty:
+        notice("Aucune course ce jour-là au programme national.")
         return
-    rows, skipped = [], 0
+    rows, skipped, examined = [], 0, 0
     with st.spinner("Calcul des probabilités…"):
-        for r in races.to_dict("records"):
+        for r in national.to_dict("records"):
             pred = _predict(int(r["race_id"]), day)
             if pred.primary != RULE_MODEL or pred.table.empty:
                 skipped += 1
                 continue
-            picks = profile_picks(pred.table)
+            if not rule.runners[0] <= len(pred.table) <= rule.runners[1]:
+                continue
+            examined += 1
+            picks = rule_picks(pred.table, rule)
             if picks.empty:
                 continue
             names = _horse_names(int(r["race_id"]))
@@ -221,18 +207,19 @@ def _render_profile(day: date, national: pd.DataFrame, n_regional: int) -> None:
                     "Cheval": names.get(pick["horse_id"], "?"),
                     "Rang modèle": int(pick["model_rank"]),
                     "P(victoire)": f"{100 * pick['p_win']:.1f} %",
-                    "P(marché)": f"{100 * pick['mkt_prob']:.1f} %",
                     "Cote réf.": f"{pick['mkt_odds']:.1f}",
+                    "Espérance": f"{100 * pick['ev']:+.0f} %",
                     "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
                 })
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
-        notice("Aucun cheval ne correspond au profil ce jour-là (pour l'instant).")
-    notes = [f"{len(races)} course(s) de trot attelé examinée(s)."]
+        notice("Aucun cheval ne correspond à la règle ce jour-là (pour l'instant).")
+    notes = [f"{examined} course(s) de 10 à 14 partants examinée(s)."]
     if skipped:
         notes.append(f"{skipped} sans cotes publiées : revenir plus tard.")
     if n_regional:
         notes.append(f"{n_regional} course(s) de réunions régionales exclue(s).")
-    st.caption(" ".join(notes) + " Un même course peut donner plusieurs chevaux (1 € chacun "
-               "dans le test).")
+    st.caption(" ".join(notes) + " Une même course peut donner plusieurs chevaux (1 € "
+               "chacun dans les tests). L'espérance est calculée sur la cote de référence "
+               "× 0,90 : ce n'est pas un gain garanti.")
