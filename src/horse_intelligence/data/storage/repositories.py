@@ -377,6 +377,15 @@ class Repository:
                                            r.c.course_num == course_num)).limit(1)).first()
         return row is not None
 
+    def quinte_races_missing_bet(self, bet_type: str, pool: str = "INTERNET") -> pd.DataFrame:
+        """Courses du quinté (rapport QUINTE_PLUS collecté) sans rapport `bet_type`."""
+        r, p = db.races, db.payouts
+        quinte = select(p.c.race_id).where(p.c.bet_type == "QUINTE_PLUS", p.c.pool == pool)
+        has = select(p.c.race_id).where(p.c.bet_type == bet_type, p.c.pool == pool)
+        return self._df(select(r.c.race_id, r.c.race_date, r.c.reunion_num, r.c.course_num)
+                        .where(r.c.race_id.in_(quinte), r.c.race_id.not_in(has))
+                        .order_by(r.c.race_date, r.c.reunion_num, r.c.course_num))
+
     def races_missing_payouts(self, pool: str, start: date, end: date) -> pd.DataFrame:
         r, p = db.races, db.payouts
         has = select(p.c.race_id).where(p.c.pool == pool).distinct()

@@ -124,6 +124,9 @@ class PmuParticipants(_Tolerant):
 
 
 class PmuRapportLigne(_Tolerant):
+    # « Tiercé Ordre », « Tiercé Désordre », « Bonus 4 »… : l'ordre et le désordre d'un
+    # tiercé / quarté / quinté portent la même combinaison, seul le libellé les distingue
+    libelle: str | None = None
     combinaison: str | None = None
     dividende_pour_un_euro: float | None = Field(default=None, alias="dividendePourUnEuro")
 

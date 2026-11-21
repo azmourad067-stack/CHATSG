@@ -192,10 +192,18 @@ def result_from_pmu(p: PmuParticipant) -> ResultRecord | None:
     )
 
 
+def payout_bet_type(type_pari: str | None, libelle: str | None) -> str:
+    """Type de pari stocké : la ligne « Désordre » d'un tiercé / quarté+ / quinté+ devient
+    `<PARI>_DESORDRE` (sinon elle serait confondue avec l'ordre, même combinaison)."""
+    bet = normalize_bet_type(type_pari)
+    label = (libelle or "").lower().replace("é", "e")
+    return f"{bet}_DESORDRE" if "desordre" in label else bet
+
+
 def payouts_from_pmu(rapports: list[PmuRapportPari], pool: str = "OFFLINE",
                      payload_id: int | None = None) -> list[PayoutRecord]:
     return [
-        PayoutRecord(normalize_bet_type(r.type_pari), clean_text(line.combinaison),
+        PayoutRecord(payout_bet_type(r.type_pari, line.libelle), clean_text(line.combinaison),
                      line.dividende_pour_un_euro / CENTS_PER_EURO
                      if line.dividende_pour_un_euro is not None else None,
                      pool, payload_id)
