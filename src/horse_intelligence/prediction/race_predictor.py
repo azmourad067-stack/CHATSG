@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -240,3 +240,79 @@ def predict_race(engine: Engine, race_id: int, frame: pd.DataFrame | None = None
     return RacePrediction(race_id, status, msg, table.sort_values("rank").reset_index(drop=True),
                           meta_out, primary, n_places, has_market, in_sample, unc, reasons,
                           place_method)
+
+
+@dataclass
+class DayPrediction:
+    """Probabilités de victoire d'une course, sans les explications ni l'incertitude :
+    mêmes `p_win` et même modèle principal que `predict_race`, pour les pages qui
+    balaient toutes les courses du jour."""
+
+    race_id: int
+    primary: str | None
+    table: pd.DataFrame  # num_pmu, horse_id, mkt_odds, mkt_prob, p_win, rank
+    message: str = ""
+
+
+def _quality_statuses(engine: Engine, race_ids: list[int]) -> dict[int, str]:
+    """Dernier statut qualité de chaque course, en deux requêtes."""
+    r, q = db.races, db.data_quality_reports
+    with engine.connect() as conn:
+        races = conn.execute(select(r.c.race_id, r.c.race_date, r.c.reunion_num, r.c.course_num)
+                             .where(r.c.race_id.in_(race_ids))).all()
+        keys = {f"{x.race_date.isoformat()}-R{x.reunion_num}C{x.course_num}": int(x.race_id)
+                for x in races}
+        rows = conn.execute(select(q.c.scope_ref, q.c.status, q.c.report_id)
+                            .where(q.c.scope == "race", q.c.scope_ref.in_(list(keys)))
+                            .order_by(q.c.report_id)).all()
+    out = dict.fromkeys(keys.values(), DataStatus.UNAVAILABLE.value)
+    for ref, status, _ in rows:  # ordre croissant : le dernier rapport l'emporte
+        out[keys[ref]] = str(status)
+    return out
+
+
+def predict_day(engine: Engine, race_ids: list[int], frame: pd.DataFrame,
+                models: dict[str, LoadedFamily]) -> dict[int, DayPrediction]:
+    """Probabilités de victoire de plusieurs courses en un seul calcul par modèle."""
+    statuses = _quality_statuses(engine, race_ids) if race_ids else {}
+    out: dict[int, DayPrediction] = {}
+    day = frame[frame["race_id"].isin(race_ids)]
+    groups = {int(cast(int, rid)): g for rid, g in day.groupby("race_id", sort=False)}
+    usable: list[int] = []
+    for rid in race_ids:
+        status = statuses.get(rid, DataStatus.UNAVAILABLE.value)
+        g = groups.get(rid)
+        if status in (DataStatus.INSUFFICIENT.value, DataStatus.UNAVAILABLE.value):
+            out[rid] = DayPrediction(rid, None, pd.DataFrame(),
+                                     "Données insuffisantes : aucune prédiction.")
+        elif g is None or len(g) < 2:
+            out[rid] = DayPrediction(rid, None, pd.DataFrame(),
+                                     "Moins de deux partants identifiés : aucune prédiction.")
+        else:
+            usable.append(rid)
+    with_market = [rid for rid in usable if groups[rid]["mkt_prob"].notna().all()]
+    probs: dict[str, pd.Series] = {}
+    for family in PRIMARY_ORDER:
+        loaded = models.get(family)
+        m = loaded.lgbm if loaded is not None else None
+        if m is None:
+            continue
+        ids = with_market if m.with_market else usable
+        if not ids:
+            continue
+        sub = day[day["race_id"].isin(ids)]
+        probs[family] = pd.Series(m.predict(sub), index=sub.index)
+    for rid in usable:
+        g = groups[rid]
+        primary = next((f for f in PRIMARY_ORDER if f in probs and g.index[0] in
+                        probs[f].index), None)
+        if primary is None:
+            out[rid] = DayPrediction(rid, None, pd.DataFrame(),
+                                     "Aucun modèle applicable à cette course.")
+            continue
+        table = g[["num_pmu", "horse_id", "mkt_odds", "mkt_prob"]].copy()
+        table["p_win"] = probs[primary].loc[g.index].to_numpy()
+        table["rank"] = table["p_win"].rank(ascending=False, method="min")
+        out[rid] = DayPrediction(rid, primary,
+                                 table.sort_values("rank").reset_index(drop=True))
+    return out

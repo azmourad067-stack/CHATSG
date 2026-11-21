@@ -20,8 +20,9 @@ fixes.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -32,7 +33,7 @@ from horse_intelligence.data.storage import database as db
 from horse_intelligence.evaluation.forward_rules import VALUE_46, rule_picks
 from horse_intelligence.evaluation.segment_analysis import race_group
 from horse_intelligence.frontend.components.cards import notice
-from horse_intelligence.frontend.race_analysis import _predict
+from horse_intelligence.frontend.race_analysis import day_predictions
 from horse_intelligence.frontend.state import get_context
 
 PARIS = ZoneInfo("Europe/Paris")
@@ -95,10 +96,34 @@ def _finish(race: dict[Any, Any], num_pmu: Any) -> Any:
     return None if hit.empty else hit["finish_position"].iloc[0]
 
 
-def _horse_names(race_id: int) -> dict[int, str]:
-    entries = get_context().repo.entries_as_of(race_id)
-    return dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
-        if not entries.empty else {}
+@dataclass
+class DayData:
+    """Prédictions et partants des courses du jour, lus une seule fois par affichage."""
+
+    preds: dict[int, Any]
+    entries: dict[int, pd.DataFrame]
+
+    def pred(self, race_id: int) -> Any:
+        return self.preds.get(race_id)
+
+    def runners(self, race_id: int) -> pd.DataFrame:
+        return self.entries.get(race_id, pd.DataFrame())
+
+    def names(self, race_id: int) -> dict[int, str]:
+        e = self.runners(race_id)
+        return dict(zip(e["horse_id"], e["horse"], strict=True)) if not e.empty else {}
+
+
+def _day_data(day: date, races: pd.DataFrame) -> DayData:
+    ids = [int(x) for x in races["race_id"]] if not races.empty else []
+    if not ids:
+        return DayData({}, {})
+    with st.spinner("Calcul des probabilités…"):
+        preds = day_predictions(day, ids)
+        entries = get_context().repo.entries_for_races(ids)
+    by_race = {int(cast(int, rid)): g.reset_index(drop=True)
+               for rid, g in entries.groupby("race_id")} if not entries.empty else {}
+    return DayData(preds, by_race)
 
 
 def render() -> None:
@@ -116,11 +141,12 @@ def render() -> None:
     all_races = _races_on(day)
     national = national_races(all_races)
     n_regional = len(all_races) - len(national)
+    data = _day_data(day, national)
     tab_g, tab_value = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)"])
     with tab_g:
-        _render_trot_g(day, national, n_regional)
+        _render_trot_g(national, n_regional, data)
     with tab_value:
-        _render_value(day, national, n_regional)
+        _render_value(national, n_regional, data)
     st.caption(
         "Heures de Paris. Le classement tient compte des cotes, il peut changer jusqu'au "
         "départ : consultez la page 10 à 20 minutes avant la course (les données sont "
@@ -128,7 +154,7 @@ def render() -> None:
         "revenir dessus. Les tests ont été réglés aux rapports de la masse Internet du PMU.")
 
 
-def _render_trot_g(day: date, national: pd.DataFrame, n_regional: int) -> None:
+def _render_trot_g(national: pd.DataFrame, n_regional: int, data: DayData) -> None:
     st.warning("Règle NON validée : « 3e du modèle, simple gagnant, courses de trot G ». "
                "Sur les réunions du programme national, avec le modèle actuel, elle aurait "
                "donné −11,7 % sur deux ans (407 paris, intervalle de −35 % à +15 %) : aucun "
@@ -140,29 +166,29 @@ def _render_trot_g(day: date, national: pd.DataFrame, n_regional: int) -> None:
         return
 
     rows = []
-    with st.spinner("Calcul des probabilités…"):
-        for r in races.to_dict("records"):
-            pred = _predict(int(r["race_id"]), day)
-            # règle testée avec le modèle « LightGBM + marché » : sans cotes, pas de choix
-            tested = pred.primary == RULE_MODEL and not pred.table.empty
-            pick = rule_pick(pred.table) if tested else None
-            names = _horse_names(int(r["race_id"]))
-            finish = None if pick is None else _finish(r, pick["num_pmu"])
-            rows.append({
-                "Départ": _paris_time(r["scheduled_start_utc"]),
-                "Course": f"R{r['reunion_num']}C{r['course_num']}",
-                "Hippodrome": r["racecourse"] or "?",
-                "Distance": f"{r['distance_m'] or '?'} m",
-                "N° à jouer": "—" if pick is None else int(pick["num_pmu"]),
-                "Cheval": "—" if pick is None else names.get(pick["horse_id"], "?"),
-                "P(victoire)": "—" if pick is None else f"{100 * pick['p_win']:.0f} %",
-                "Cote réf.": "—" if pick is None or pd.isna(pick["mkt_odds"])
-                else f"{pick['mkt_odds']:.1f}",
-                "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
-                "Remarque": "" if pick is not None else (
-                    "cotes pas encore publiées : revenir plus tard" if not pred.table.empty
-                    else pred.message),
-            })
+    for r in races.to_dict("records"):
+        pred = data.pred(int(r["race_id"]))
+        # règle testée avec le modèle « LightGBM + marché » : sans cotes, pas de choix
+        tested = pred is not None and pred.primary == RULE_MODEL and not pred.table.empty
+        pick = rule_pick(pred.table) if tested else None
+        names = data.names(int(r["race_id"]))
+        finish = None if pick is None else _finish(r, pick["num_pmu"])
+        rows.append({
+            "Départ": _paris_time(r["scheduled_start_utc"]),
+            "Course": f"R{r['reunion_num']}C{r['course_num']}",
+            "Hippodrome": r["racecourse"] or "?",
+            "Distance": f"{r['distance_m'] or '?'} m",
+            "N° à jouer": "—" if pick is None else int(pick["num_pmu"]),
+            "Cheval": "—" if pick is None else names.get(pick["horse_id"], "?"),
+            "P(victoire)": "—" if pick is None else f"{100 * pick['p_win']:.0f} %",
+            "Cote réf.": "—" if pick is None or pd.isna(pick["mkt_odds"])
+            else f"{pick['mkt_odds']:.1f}",
+            "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
+            "Remarque": "" if pick is not None else (
+                "cotes pas encore publiées : revenir plus tard"
+                if pred is not None and not pred.table.empty
+                else (pred.message if pred is not None else "aucune prédiction")),
+        })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     if n_regional:
         st.caption(f"{n_regional} course(s) de réunions régionales exclue(s) : elles ne "
@@ -195,7 +221,7 @@ def watch_state(table: pd.DataFrame, picks: pd.DataFrame, started: bool,
     return "aucun cheval retenu pour l'instant"
 
 
-def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
+def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> None:
     rule = VALUE_46
     st.warning(
         "Règle NON validée, figée le 21/11/2026 pour être jugée sur les courses à venir : "
@@ -210,51 +236,51 @@ def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
         return
     now = datetime.now(UTC)
     rows, watch = [], []
-    with st.spinner("Calcul des probabilités…"):
-        for r in national.to_dict("records"):
-            rid = int(r["race_id"])
-            pred = _predict(rid, day)
-            table = pred.table if pred.primary == RULE_MODEL else pred.table.iloc[0:0]
-            entries = get_context().repo.entries_as_of(rid)
-            n = len(table) if not table.empty else n_starters(entries)
-            if not rule.runners[0] <= n <= rule.runners[1]:
-                continue
-            picks = rule_picks(table, rule) if not table.empty else table
-            start = r["scheduled_start_utc"]
-            start_ts = None if start is None or pd.isna(start) else pd.Timestamp(start)
-            if start_ts is not None and start_ts.tzinfo is None:
-                start_ts = start_ts.tz_localize(UTC)
-            started = start_ts is not None and start_ts <= now
-            watch.append({
-                "_start": start_ts,
+    for r in national.to_dict("records"):
+        rid = int(r["race_id"])
+        pred = data.pred(rid)
+        table = pred.table if pred is not None and pred.primary == RULE_MODEL \
+            else pd.DataFrame(columns=["num_pmu", "horse_id", "p_win", "mkt_odds"])
+        entries = data.runners(rid)
+        n = len(table) if not table.empty else n_starters(entries)
+        if not rule.runners[0] <= n <= rule.runners[1]:
+            continue
+        picks = rule_picks(table, rule) if not table.empty else table
+        start = r["scheduled_start_utc"]
+        start_ts = None if start is None or pd.isna(start) else pd.Timestamp(start)
+        if start_ts is not None and start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize(UTC)
+        started = start_ts is not None and start_ts <= now
+        watch.append({
+            "_start": start_ts,
+            "Départ": _paris_time(start),
+            "Consulter vers": "—" if start_ts is None
+            else _paris_time(start_ts - CHECK_BEFORE),
+            "Course": f"R{r['reunion_num']}C{r['course_num']}",
+            "Hippodrome": r["racecourse"] or "?",
+            "Discipline": DISCIPLINE_NAMES.get(str(r["discipline"]), "?"),
+            "Partants": n,
+            "État": watch_state(table, picks, started, bool(r["result_final"])),
+        })
+        if picks.empty:
+            continue
+        names = dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
+            if not entries.empty else {}
+        for pick in picks.to_dict("records"):
+            finish = _finish(r, int(pick["num_pmu"]))
+            rows.append({
                 "Départ": _paris_time(start),
-                "Consulter vers": "—" if start_ts is None
-                else _paris_time(start_ts - CHECK_BEFORE),
                 "Course": f"R{r['reunion_num']}C{r['course_num']}",
                 "Hippodrome": r["racecourse"] or "?",
-                "Discipline": DISCIPLINE_NAMES.get(str(r["discipline"]), "?"),
                 "Partants": n,
-                "État": watch_state(table, picks, started, bool(r["result_final"])),
+                "N° à jouer": int(pick["num_pmu"]),
+                "Cheval": names.get(pick["horse_id"], "?"),
+                "Rang modèle": int(pick["model_rank"]),
+                "P(victoire)": f"{100 * pick['p_win']:.1f} %",
+                "Cote réf.": f"{pick['mkt_odds']:.1f}",
+                "Espérance": f"{100 * pick['ev']:+.0f} %",
+                "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
             })
-            if picks.empty:
-                continue
-            names = dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
-                if not entries.empty else {}
-            for pick in picks.to_dict("records"):
-                finish = _finish(r, int(pick["num_pmu"]))
-                rows.append({
-                    "Départ": _paris_time(start),
-                    "Course": f"R{r['reunion_num']}C{r['course_num']}",
-                    "Hippodrome": r["racecourse"] or "?",
-                    "Partants": n,
-                    "N° à jouer": int(pick["num_pmu"]),
-                    "Cheval": names.get(pick["horse_id"], "?"),
-                    "Rang modèle": int(pick["model_rank"]),
-                    "P(victoire)": f"{100 * pick['p_win']:.1f} %",
-                    "Cote réf.": f"{pick['mkt_odds']:.1f}",
-                    "Espérance": f"{100 * pick['ev']:+.0f} %",
-                    "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
-                })
     if not watch:
         notice("Aucune course de 10 à 14 partants ce jour-là au programme national.")
         return

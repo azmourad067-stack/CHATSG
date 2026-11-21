@@ -479,6 +479,20 @@ class Repository:
         df = df.sort_values("observed_at").drop_duplicates("num_pmu", keep="last")
         return df.sort_values("num_pmu").reset_index(drop=True)
 
+    def entries_for_races(self, race_ids: Sequence[int]) -> pd.DataFrame:
+        """Dernière version connue des partants de plusieurs courses, en une requête."""
+        if not race_ids:
+            return pd.DataFrame()
+        e, h = db.race_entries, db.horses
+        df = self._df(select(e.c.race_id, e.c.num_pmu, e.c.horse_id, e.c.status,
+                             e.c.observed_at, h.c.display_name.label("horse"))
+                      .join(h, h.c.horse_id == e.c.horse_id)
+                      .where(e.c.race_id.in_([int(r) for r in race_ids])))
+        if df.empty:
+            return df
+        df = df.sort_values("observed_at").drop_duplicates(["race_id", "num_pmu"], keep="last")
+        return df.sort_values(["race_id", "num_pmu"]).reset_index(drop=True)
+
     def odds_as_of(self, race_id: int, as_of: datetime,
                    kinds: Sequence[str] = ("reference", "live"),
                    pool: str | None = None) -> pd.DataFrame:

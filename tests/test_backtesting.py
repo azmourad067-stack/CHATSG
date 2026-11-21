@@ -169,3 +169,35 @@ def test_validation_end_to_end(trained, tmp_path) -> None:  # type: ignore[no-un
     fav = rep["references_all_period"][0]
     assert fav["n_bets"] > 0 and fav["roi"] < 0.1
     assert latest_validation(repo.engine)["races"] == rep["races"]
+
+
+def test_predict_day_matches_predict_race(trained) -> None:  # type: ignore[no-untyped-def]
+    from horse_intelligence.prediction.race_predictor import (
+        build_frame,
+        load_models,
+        models_use_source_aggregates,
+        predict_day,
+    )
+
+    repo, _ = trained
+    day = START_DAY + timedelta(days=29)
+    ids = [int(x) for x in repo.races_on(day)["race_id"]]
+    models = load_models(repo.engine)
+    frame = build_frame(repo.engine, day, models_use_source_aggregates(models))
+    batch = predict_day(repo.engine, ids, frame, models)
+    assert set(batch) == set(ids)
+    for rid in ids:
+        one = predict_race(repo.engine, rid, frame=frame, models=models)
+        got = batch[rid]
+        assert got.primary == one.primary
+        cols = ["num_pmu", "horse_id", "p_win", "rank", "mkt_odds"]
+        pd.testing.assert_frame_equal(
+            got.table[cols].sort_values("num_pmu").reset_index(drop=True),
+            one.table[cols].sort_values("num_pmu").reset_index(drop=True),
+            check_dtype=False)
+    # partants de toutes les courses en une requête = partants course par course
+    grouped = repo.entries_for_races(ids)
+    for rid in ids:
+        one_e = repo.entries_as_of(rid)
+        assert grouped[grouped["race_id"] == rid]["num_pmu"].tolist() == \
+            one_e["num_pmu"].tolist()

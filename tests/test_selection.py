@@ -154,7 +154,7 @@ def _value_tab_script() -> None:
                                                "2099-01-01 14:00"]),
         "result_final": [False, False, False], "audience": ["NATIONAL"] * 3,
         "racecourse": ["VINCENNES", "PAU", "PAU"]})
-    sel._render_value(date(2099, 1, 1), races, 0)
+    sel._render_value(races, 0, sel._day_data(date(2099, 1, 1), races))
 
 
 def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -169,19 +169,23 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
     table = pd.DataFrame({"num_pmu": range(1, 11), "horse_id": range(101, 111), "p_win": p,
                           "mkt_odds": odds, "mkt_prob": p})
 
-    def fake_predict(race_id, day):  # type: ignore[no-untyped-def]
-        if race_id == 1:   # 10 partants, cotes publiées : le n°5 est retenu
-            return SimpleNamespace(primary=sel.RULE_MODEL, table=table, message="")
-        if race_id == 2:   # cotes pas encore publiées
-            return SimpleNamespace(primary="lgbm_form", table=table.iloc[0:0], message="")
-        return SimpleNamespace(primary=sel.RULE_MODEL, table=table.head(8), message="")
+    def fake_day_predictions(day, race_ids):  # type: ignore[no-untyped-def]
+        assert sorted(race_ids) == [1, 2, 3]  # un seul calcul pour toutes les courses
+        return {
+            # 10 partants, cotes publiées : le n°5 est retenu
+            1: SimpleNamespace(primary=sel.RULE_MODEL, table=table, message=""),
+            # cotes pas encore publiées
+            2: SimpleNamespace(primary="lgbm_form", table=table.iloc[0:0], message=""),
+            3: SimpleNamespace(primary=sel.RULE_MODEL, table=table.head(8), message="")}
 
-    entries = pd.DataFrame({"num_pmu": range(1, 13), "horse_id": range(101, 113),
-                            "horse": [f"CHEVAL {i}" for i in range(1, 13)],
-                            "status": ["PARTANT"] * 12})
-    repo = SimpleNamespace(entries_as_of=lambda rid: entries if rid == 2 else entries.head(10),
+    one = pd.DataFrame({"num_pmu": range(1, 13), "horse_id": range(101, 113),
+                        "horse": [f"CHEVAL {i}" for i in range(1, 13)],
+                        "status": ["PARTANT"] * 12})
+    entries = pd.concat([one.head(10).assign(race_id=1), one.assign(race_id=2),
+                         one.head(8).assign(race_id=3)])
+    repo = SimpleNamespace(entries_for_races=lambda ids: entries,
                            results_for=lambda rid: pd.DataFrame())
-    monkeypatch.setattr(sel, "_predict", fake_predict)
+    monkeypatch.setattr(sel, "day_predictions", fake_day_predictions)
     monkeypatch.setattr(sel, "get_context", lambda: SimpleNamespace(repo=repo))
     at = AppTest.from_function(_value_tab_script, default_timeout=30)
     at.run()
