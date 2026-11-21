@@ -152,11 +152,11 @@ def simple_bets(f: pd.DataFrame, model_col: str, s: Strategy) -> pd.DataFrame:
     m = (f["rank"].between(*r) & (odds > o[0]) & (odds <= o[1])
          & f["n_runners"].between(*n) & f[f"profit_{b}"].notna()).to_numpy()
     if d is not None:
-        m &= (f["discipline"] == d).to_numpy()
+        m = m & (f["discipline"] == d).to_numpy()
     if v == "modèle > marché":
-        m &= f["edge"].to_numpy(bool)
+        m = m & f["edge"].to_numpy(bool)
     elif v != "aucun":
-        m &= ev >= (0.10 if v.endswith("+10 %") else 0.30)
+        m = m & (ev >= (0.10 if v.endswith("+10 %") else 0.30))
     sub = f.loc[m, ["race_id", "race_date", f"profit_{b}"]]
     return sub.groupby(["race_id", "race_date"], as_index=False).agg(
         stake=(f"profit_{b}", "size"), profit=(f"profit_{b}", "sum"))
@@ -222,7 +222,7 @@ def combo_bets(races: pd.DataFrame, s: Strategy) -> pd.DataFrame:
     m = stake.notna() & races["n_runners"].between(*n) & (races[f"fav_{src}"] >= o[0]) \
         & (races[f"fav_{src}"] < o[1] + 1e-12)
     if d is not None:
-        m &= races["discipline"] == d
+        m = m & (races["discipline"] == d)
     sub = races[m]
     return pd.DataFrame({"race_id": sub["race_id"], "race_date": sub["race_date"],
                          "stake": sub[f"{src}|{name}|stake"],

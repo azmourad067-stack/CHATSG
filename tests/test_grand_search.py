@@ -73,14 +73,21 @@ def test_protocol_and_no_false_success() -> None:
     assert all(roi[i, 1] > 0 for i in sel["final"])
     disc_roi = [roi[i, 0] for i in sel["discovery"]]
     assert disc_roi == sorted(disc_roi, reverse=True)
-    # le détail d'une stratégie retrouve les comptes du balayage
-    i = sel["discovery"][0]
+    # le détail de chaque stratégie (échantillon des deux familles, tous filtres) retrouve
+    # exactement les mises et profits du balayage, période par période
     strategies = [*s, *s2]
-    b = gs.simple_bets(f, "model", strategies[i]) if strategies[i].family == "simple" \
-        else gs.combo_bets(races, strategies[i])
-    per = gs.periods(b["race_date"], cuts)
-    counts = np.vstack([c, c2])[i]
-    assert b.loc[per == 0, "stake"].sum() == counts[0]
+    counts, gains = np.vstack([c, c2]), np.vstack([g, g2])
+    rng = np.random.default_rng(1)
+    sample = [*rng.choice(len(s), 150, replace=False),
+              *(len(s) + rng.choice(len(s2), 80, replace=False))]
+    for i in sample:
+        st = strategies[i]
+        b = gs.simple_bets(f, "model", st) if st.family == "simple" \
+            else gs.combo_bets(races, st)
+        per = gs.periods(b["race_date"], cuts) if not b.empty else np.array([], int)
+        for k in range(3):
+            assert b.loc[per == k, "stake"].sum() == counts[i, k], st.label
+            assert np.isclose(b.loc[per == k, "profit"].sum(), gains[i, k]), st.label
 
 
 def test_grand_search_end_to_end(repo) -> None:  # type: ignore[no-untyped-def]
