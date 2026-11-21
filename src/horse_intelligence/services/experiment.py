@@ -978,3 +978,64 @@ def run_profile_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, 
     if f.empty:
         return {"n_races": 0, "success": False, "tested": []}
     return {"n_races": int(f["race_id"].nunique()), **ps.search(f)}
+
+
+def run_grand_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Grande recherche (simples + combinés) en trois périodes : découverte, validation,
+    test final jamais utilisé pour choisir (protocole fixé dans grand_search)."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import grand_search as gs
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    pred = _with_market(pred)
+    pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type IN ('SIMPLE_GAGNANT', 'SIMPLE_PLACE', "
+            "'COUPLE_GAGNANT', 'COUPLE_PLACE', 'DEUX_SUR_QUATRE', 'TRIO')"), conn)
+    if pred.empty:
+        return {"n_races": 0, "success": False, "finalists": []}
+    cuts = gs.cuts_of(pred["race_date"])
+    from horse_intelligence.evaluation.profile_search import prepare
+
+    f = prepare(pred, payouts, model_col)
+    f = f[f["profit_gagnant"].notna() | f["profit_placé"].notna()]
+    races = gs.combo_races(pred, payouts, model_col)
+    s_str, s_cnt, s_gain = gs.simple_scan(f, model_col, cuts)
+    strategies, counts, gains = s_str, s_cnt, s_gain
+    if not races.empty:
+        c_str, c_cnt, c_gain = gs.combo_scan(races, cuts)
+        strategies = [*s_str, *c_str]
+        counts, gains = np.vstack([s_cnt, c_cnt]), np.vstack([s_gain, c_gain])
+    sel = gs.select(strategies, counts, gains)
+    alpha = 0.05 / max(1, len(sel["final"]))
+
+    def bets(i: int) -> pd.DataFrame:
+        s = strategies[i]
+        return gs.simple_bets(f, model_col, s) if s.family == "simple" \
+            else gs.combo_bets(races, s)
+
+    def report(i: int, final_alpha: float = 0.05) -> dict[str, Any]:
+        b = bets(i)
+        per = gs.periods(b["race_date"], cuts) if not b.empty else np.array([], int)
+        return {"label": strategies[i].label, "family": strategies[i].family,
+                "A": gs.evaluate(b[per == 0]), "B": gs.evaluate(b[per == 1]),
+                "C": gs.evaluate(b[per == 2], alpha=final_alpha)}
+
+    finalists = [report(i, alpha) for i in sel["final"]]
+    return {
+        "n_races": int(pred["race_id"].nunique()),
+        "period": (str(pred["race_date"].min()), str(pred["race_date"].max())),
+        "cuts": (str(cuts[0]), str(cuts[1])),
+        "n_strategies": sel["n_strategies"], "n_simple": len(s_str),
+        "n_eligible": sel["n_eligible"], "n_discovery": len(sel["discovery"]),
+        "n_validated": len(sel["validated"]), "alpha": alpha, "chance": sel["chance"],
+        "top_discovery": [report(i) for i in sel["discovery"][:5]],
+        "finalists": finalists,
+        "success": any(r["C"].get("roi_ci", (0, 0))[0] > 0 for r in finalists),
+    }

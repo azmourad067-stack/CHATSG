@@ -1,0 +1,166 @@
+"""Règles figées le 21/11/2026, jugées UNIQUEMENT sur les courses postérieures.
+
+« Valeur 4e-6e » : 4e à 6e du modèle, cote de référence dans ]9 ; 20], 10 à 14 partants,
+espérance du modèle ≥ +10 % (probabilité du modèle × cote × 0,90 − 1, le facteur 0,90
+étant l'écart observé entre cote de référence et rapport final des gagnants), simple
+gagnant, toutes disciplines. Seule famille positive sur les trois périodes de la grande
+recherche (23/11/2024 → 15/11/2026) : +22,6 %, +41,8 %, +22,0 % (IC du test final
+[−29 % ; +76 %]) ; NON significative après 8 640 essais. Elle ne doit plus être modifiée.
+
+Jugement : sur les prédictions enregistrées AVANT le départ (table `predictions`, la
+dernière de chaque course), à partir du lendemain du gel ; règlement au rapport définitif
+Internet. Critère fixé à l'avance : ROI > 0 avec un IC 95 % (rééchantillonnage des
+courses) entièrement au-dessus de zéro, sur au moins MIN_BETS_VERDICT paris. Avant ce
+volume, le bilan est seulement intermédiaire.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from typing import Any, cast
+
+import numpy as np
+import pandas as pd
+from sqlalchemy import Engine, text
+
+MIN_BETS_VERDICT = 600
+
+
+@dataclass(frozen=True)
+class ValueRule:
+    name: str
+    frozen_on: date
+    ranks: tuple[int, int]
+    odds: tuple[float, float]       # cote de référence > odds[0] et ≤ odds[1]
+    runners: tuple[int, int]
+    min_ev: float
+    payout_factor: float = 0.90
+    bet_type: str = "SIMPLE_GAGNANT"
+
+    @property
+    def first_day(self) -> date:
+        return date.fromordinal(self.frozen_on.toordinal() + 1)
+
+
+VALUE_46 = ValueRule("Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, gagnant",
+                     date(2026, 11, 21), (4, 6), (9.0, 20.0), (10, 14), 0.10)
+
+
+def rule_picks(table: pd.DataFrame, rule: ValueRule = VALUE_46) -> pd.DataFrame:
+    """Chevaux de la règle dans UNE course : `num_pmu`, `p_win`, `mkt_odds` par partant.
+    Aucun choix si une cote manque. Ajoute `model_rank` et `ev`."""
+    n = len(table)
+    if not rule.runners[0] <= n <= rule.runners[1] or table["mkt_odds"].isna().any():
+        return table.iloc[0:0].assign(model_rank=pd.Series(dtype=int),
+                                      ev=pd.Series(dtype=float))
+    t = table.sort_values("p_win", ascending=False, kind="stable").reset_index(drop=True)
+    t["model_rank"] = np.arange(1, n + 1)
+    t["ev"] = t["p_win"] * t["mkt_odds"] * rule.payout_factor - 1.0
+    lo, hi = rule.ranks
+    return t[t["model_rank"].between(lo, hi) & (t["mkt_odds"] > rule.odds[0])
+             & (t["mkt_odds"] <= rule.odds[1]) & (t["ev"] >= rule.min_ev)]
+
+
+def _last_predictions(engine: Engine, first_day: date) -> pd.DataFrame:
+    """Partants de la DERNIÈRE prédiction enregistrée avant le départ de chaque course
+    courue à partir de `first_day`."""
+    query = text("""
+        SELECT p.prediction_id, p.race_id, p.decision_time, r.race_date, r.audience,
+               r.label, r.conditions_text, r.discipline, r.scheduled_start_utc
+        FROM predictions p JOIN races r ON r.race_id = p.race_id
+        WHERE r.race_date >= :first""")
+    with engine.connect() as conn:
+        preds = pd.read_sql(query, conn, params={"first": first_day})
+        if preds.empty:
+            return preds.assign(num_pmu=[], p_win=[], mkt_odds=[])
+        entries = pd.read_sql(text(
+            "SELECT e.prediction_id, e.num_pmu, e.p_win, e.mkt_odds "
+            "FROM prediction_entries e JOIN predictions p "
+            "ON p.prediction_id = e.prediction_id JOIN races r ON r.race_id = p.race_id "
+            "WHERE r.race_date >= :first"), conn, params={"first": first_day})
+    dt = pd.to_datetime(preds["decision_time"], utc=True)
+    start = pd.to_datetime(preds["scheduled_start_utc"], utc=True)
+    preds = preds[dt < start].assign(_dt=dt[dt < start])
+    last = preds.sort_values("_dt").groupby("race_id").tail(1).drop(columns="_dt")
+    last = last.assign(race_date=pd.to_datetime(last["race_date"]).dt.date)
+    return last.merge(entries, on="prediction_id")
+
+
+def forward_bets(engine: Engine, rule: ValueRule = VALUE_46,
+                 national_only: bool = True) -> pd.DataFrame:
+    """Paris de la règle sur les prédictions enregistrées avant le départ (dernière
+    prédiction de chaque course), courses réglées seulement."""
+    entries = _last_predictions(engine, rule.first_day)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type = :bt AND payout_per_eur IS NOT NULL"),
+            conn, params={"bt": rule.bet_type})
+    if national_only and not entries.empty:
+        entries = entries[~entries["audience"].isin(("LOCAL", "REGIONAL"))]
+    settled = set(payouts["race_id"].astype(int))
+    paid = {(int(r), str(c)): float(v) for r, c, v in zip(
+        payouts["race_id"], payouts["combination"], payouts["payout_per_eur"], strict=True)}
+    rows = []
+    for rid, g in entries.groupby("race_id"):
+        rid_i = int(cast(int, rid))
+        if rid_i not in settled:
+            continue
+        for pick in rule_picks(g, rule).to_dict("records"):
+            rows.append({"race_id": rid_i, "race_date": g["race_date"].iloc[0],
+                         "num_pmu": int(pick["num_pmu"]), "mkt_odds": pick["mkt_odds"],
+                         "profit": paid.get((rid_i, str(int(pick["num_pmu"]))), 0.0) - 1.0})
+    return pd.DataFrame(rows, columns=["race_id", "race_date", "num_pmu", "mkt_odds",
+                                       "profit"])
+
+
+def forward_trot_g(engine: Engine, first_day: date = VALUE_46.first_day) -> pd.DataFrame:
+    """Règle de la page (3e du modèle, gagnant, trot G, réunions nationales) sur les mêmes
+    prédictions d'avant-course, pour le même bilan."""
+    from horse_intelligence.evaluation.segment_analysis import race_group
+
+    entries = _last_predictions(engine, first_day)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, combination, payout_per_eur FROM payouts WHERE pool = "
+            "'INTERNET' AND bet_type = 'SIMPLE_GAGNANT' AND payout_per_eur IS NOT NULL"), conn)
+    settled = set(payouts["race_id"].astype(int))
+    paid = {(int(r), str(c)): float(v) for r, c, v in zip(
+        payouts["race_id"], payouts["combination"], payouts["payout_per_eur"], strict=True)}
+    rows = []
+    for rid, g in entries.groupby("race_id"):
+        rid_i = int(cast(int, rid))
+        first = g.iloc[0]
+        if (rid_i not in settled or first["audience"] in ("LOCAL", "REGIONAL")
+                or race_group(first["label"], first["conditions_text"],
+                              first["discipline"]) != "Trot G"
+                or len(g) < 3 or g["mkt_odds"].isna().any()):
+            continue
+        pick = g.sort_values("p_win", ascending=False, kind="stable").iloc[2]
+        rows.append({"race_id": rid_i, "race_date": first["race_date"],
+                     "num_pmu": int(pick["num_pmu"]), "mkt_odds": pick["mkt_odds"],
+                     "profit": paid.get((rid_i, str(int(pick["num_pmu"]))), 0.0) - 1.0})
+    return pd.DataFrame(rows, columns=["race_id", "race_date", "num_pmu", "mkt_odds",
+                                       "profit"])
+
+
+def verdict(bets: pd.DataFrame, n_boot: int = 4000, seed: int = 0) -> dict[str, Any]:
+    if bets.empty:
+        return {"bets": 0, "status": "aucun pari réglé"}
+    per_race = bets.groupby("race_id")["profit"].agg(["sum", "size"])
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(per_race), size=(n_boot, len(per_race)))
+    pr, st = per_race["sum"].to_numpy(), per_race["size"].to_numpy()
+    boots = pr[idx].sum(axis=1) / st[idx].sum(axis=1)
+    ci = (float(np.quantile(boots, 0.025)), float(np.quantile(boots, 0.975)))
+    n = len(bets)
+    if n < MIN_BETS_VERDICT:
+        status = f"intermédiaire ({n} paris sur {MIN_BETS_VERDICT} nécessaires)"
+    else:
+        status = "VALIDÉE" if ci[0] > 0 else "NON validée"
+    return {"bets": n, "profit": float(bets["profit"].sum()),
+            "roi": float(bets["profit"].mean()), "roi_ci": ci,
+            "hit_rate": float((bets["profit"] > -1).mean()),
+            "period": (str(bets["race_date"].min()), str(bets["race_date"].max())),
+            "status": status}

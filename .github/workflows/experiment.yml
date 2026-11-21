@@ -17,6 +17,8 @@
 #   tierce_quinte : 20 combinaisons de tiercé par quinté (rattrape d'abord les rapports désordre)
 #   quinte_plus : Quinté+, nombre de combinaisons contre gain (combinés, 1 base)
 #   profiles : profils de course (rang × cote × discipline × partants), gagnant / placé
+#   grand_search : ~8 600 stratégies (simples + combinés), découverte / validation / test final
+#   forward_rules : bilan des règles figées le 21/11/2026 sur les courses postérieures
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -27,7 +29,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -121,6 +123,12 @@ jobs:
       - name: Profils de course, gagnant / placé
         if: env.EXPERIMENT == 'profiles'
         run: python scripts/experiment_profiles.py
+      - name: Grande recherche de stratégies (simples + combinés)
+        if: env.EXPERIMENT == 'grand_search'
+        run: python scripts/experiment_grand_search.py
+      - name: Bilan des règles figées le 21/11/2026 (courses postérieures)
+        if: env.EXPERIMENT == 'forward_rules'
+        run: python scripts/validate_forward_rules.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py
