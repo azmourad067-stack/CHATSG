@@ -20,7 +20,7 @@ fixes.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -169,6 +169,32 @@ def _render_trot_g(day: date, national: pd.DataFrame, n_regional: int) -> None:
                    "figurent pas au programme national de pmu.fr.")
 
 
+DISCIPLINE_NAMES = {"trot_attele": "trot attelé", "trot_monte": "trot monté", "plat": "plat",
+                    "obstacle": "obstacle"}
+CHECK_BEFORE = timedelta(minutes=10)
+
+
+def n_starters(entries: pd.DataFrame) -> int:
+    """Partants connus d'une course (non-partants déclarés exclus)."""
+    if entries.empty:
+        return 0
+    status = entries["status"] if "status" in entries else pd.Series("", index=entries.index)
+    return int((status.fillna("").str.upper() != "NON_PARTANT").sum())
+
+
+def watch_state(table: pd.DataFrame, picks: pd.DataFrame, started: bool,
+                finished: bool) -> str:
+    """État d'une course à surveiller, en clair."""
+    if finished:
+        return "terminée"
+    if table.empty or table["mkt_odds"].isna().any():
+        return "partie" if started else "cotes pas encore publiées : revenir avant le départ"
+    if not picks.empty:
+        nums = ", ".join(f"n°{int(n)}" for n in picks["num_pmu"])
+        return f"{len(picks)} cheval(aux) retenu(s) pour l'instant : {nums}"
+    return "aucun cheval retenu pour l'instant"
+
+
 def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
     rule = VALUE_46
     st.warning(
@@ -182,27 +208,45 @@ def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
     if national.empty:
         notice("Aucune course ce jour-là au programme national.")
         return
-    rows, skipped, examined = [], 0, 0
+    now = datetime.now(UTC)
+    rows, watch = [], []
     with st.spinner("Calcul des probabilités…"):
         for r in national.to_dict("records"):
-            pred = _predict(int(r["race_id"]), day)
-            if pred.primary != RULE_MODEL or pred.table.empty:
-                skipped += 1
+            rid = int(r["race_id"])
+            pred = _predict(rid, day)
+            table = pred.table if pred.primary == RULE_MODEL else pred.table.iloc[0:0]
+            entries = get_context().repo.entries_as_of(rid)
+            n = len(table) if not table.empty else n_starters(entries)
+            if not rule.runners[0] <= n <= rule.runners[1]:
                 continue
-            if not rule.runners[0] <= len(pred.table) <= rule.runners[1]:
-                continue
-            examined += 1
-            picks = rule_picks(pred.table, rule)
+            picks = rule_picks(table, rule) if not table.empty else table
+            start = r["scheduled_start_utc"]
+            start_ts = None if start is None or pd.isna(start) else pd.Timestamp(start)
+            if start_ts is not None and start_ts.tzinfo is None:
+                start_ts = start_ts.tz_localize(UTC)
+            started = start_ts is not None and start_ts <= now
+            watch.append({
+                "_start": start_ts,
+                "Départ": _paris_time(start),
+                "Consulter vers": "—" if start_ts is None
+                else _paris_time(start_ts - CHECK_BEFORE),
+                "Course": f"R{r['reunion_num']}C{r['course_num']}",
+                "Hippodrome": r["racecourse"] or "?",
+                "Discipline": DISCIPLINE_NAMES.get(str(r["discipline"]), "?"),
+                "Partants": n,
+                "État": watch_state(table, picks, started, bool(r["result_final"])),
+            })
             if picks.empty:
                 continue
-            names = _horse_names(int(r["race_id"]))
+            names = dict(zip(entries["horse_id"], entries["horse"], strict=True)) \
+                if not entries.empty else {}
             for pick in picks.to_dict("records"):
                 finish = _finish(r, int(pick["num_pmu"]))
                 rows.append({
-                    "Départ": _paris_time(r["scheduled_start_utc"]),
+                    "Départ": _paris_time(start),
                     "Course": f"R{r['reunion_num']}C{r['course_num']}",
                     "Hippodrome": r["racecourse"] or "?",
-                    "Partants": len(pred.table),
+                    "Partants": n,
                     "N° à jouer": int(pick["num_pmu"]),
                     "Cheval": names.get(pick["horse_id"], "?"),
                     "Rang modèle": int(pick["model_rank"]),
@@ -211,13 +255,27 @@ def _render_value(day: date, national: pd.DataFrame, n_regional: int) -> None:
                     "Espérance": f"{100 * pick['ev']:+.0f} %",
                     "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
                 })
+    if not watch:
+        notice("Aucune course de 10 à 14 partants ce jour-là au programme national.")
+        return
+    watch_df = pd.DataFrame(watch).sort_values("_start", na_position="last")
+    upcoming = watch_df[watch_df["_start"].notna() & (watch_df["_start"] > now)]
+    if not upcoming.empty:
+        nxt = upcoming.iloc[0]
+        st.info(f"Prochaine course à surveiller : {nxt['Course']} ({nxt['Hippodrome']}) "
+                f"à {nxt['Départ']}. Rafraîchissez la page vers {nxt['Consulter vers']}.")
+    st.subheader("Chevaux retenus")
     if rows:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     else:
-        notice("Aucun cheval ne correspond à la règle ce jour-là (pour l'instant).")
-    notes = [f"{examined} course(s) de 10 à 14 partants examinée(s)."]
-    if skipped:
-        notes.append(f"{skipped} sans cotes publiées : revenir plus tard.")
+        notice("Aucun cheval retenu pour l'instant. La liste change avec les cotes : "
+               "revenez 10 minutes avant chaque course ci-dessous.")
+    st.subheader(f"Courses à surveiller ({len(watch_df)})")
+    st.dataframe(watch_df.drop(columns="_start"), hide_index=True, width="stretch")
+    notes = ["Courses du programme national de 10 à 14 partants : la règle ne peut retenir "
+             "un cheval que dans celles-ci. Le choix dépend des cotes, qui bougent jusqu'au "
+             "départ : rafraîchissez la page à l'heure « Consulter vers » et jouez les "
+             "chevaux retenus à ce moment-là, sans revenir dessus."]
     if n_regional:
         notes.append(f"{n_regional} course(s) de réunions régionales exclue(s).")
     st.caption(" ".join(notes) + " Une même course peut donner plusieurs chevaux (1 € "
