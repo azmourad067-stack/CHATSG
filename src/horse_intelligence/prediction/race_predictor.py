@@ -313,6 +313,6 @@ def predict_day(engine: Engine, race_ids: list[int], frame: pd.DataFrame,
         table = g[["num_pmu", "horse_id", "mkt_odds", "mkt_prob"]].copy()
         table["p_win"] = probs[primary].loc[g.index].to_numpy()
         table["rank"] = table["p_win"].rank(ascending=False, method="min")
-        out[rid] = DayPrediction(rid, primary,
-                                 table.sort_values("rank").reset_index(drop=True))
+        out[rid] = DayPrediction(rid, primary, table.sort_values(
+            ["rank", "num_pmu"], kind="stable").reset_index(drop=True))
     return out

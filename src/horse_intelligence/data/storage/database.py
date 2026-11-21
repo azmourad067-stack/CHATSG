@@ -351,6 +351,29 @@ prediction_entries = Table(
     Column("mkt_prob", Float), Column("mkt_odds", Float),
 )
 
+# Prédictions du jour précalculées par la collecte (toutes les 15 min) pour l'interface :
+# une ligne par course (clé de fraîcheur des données) et une par partant. Écrasées à chaque
+# calcul ; seules les courses des derniers jours sont conservées.
+day_prediction_races = Table(
+    "day_prediction_races", metadata,
+    Column("race_id", ForeignKey("races.race_id"), primary_key=True),
+    Column("race_date", Date, nullable=False),
+    Column("data_key", String(300), nullable=False),
+    Column("primary_model", String(40)),
+    Column("message", String(300)),
+    Column("computed_at", UTCDateTime, nullable=False),
+)
+
+day_prediction_runners = Table(
+    "day_prediction_runners", metadata,
+    Column("race_id", ForeignKey("day_prediction_races.race_id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("num_pmu", Integer, primary_key=True),
+    Column("horse_id", Integer),
+    Column("p_win", Float), Column("mkt_odds", Float), Column("mkt_prob", Float),
+    Column("rank", Float),
+)
+
 prediction_explanations = Table(
     "prediction_explanations", metadata,
     Column("explanation_id", Integer, primary_key=True, autoincrement=True),

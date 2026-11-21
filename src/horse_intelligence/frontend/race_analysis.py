@@ -48,37 +48,46 @@ def _frame(day: date, data_key: str, use_agg: bool) -> pd.DataFrame:
 
 
 def _model_key() -> str:
-    from horse_intelligence.models.registry import latest_model
+    from horse_intelligence.prediction.day_store import model_key
 
-    engine = get_context().repo.engine
-    metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated",
-                                                "place_market")]
-    return "|".join(str(m["version"]) if m else "-" for m in metas)
+    return model_key(get_context().repo.engine)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _keys() -> tuple[str, str]:
     """(clé des modèles, clé des données), relues au plus toutes les 30 secondes."""
+    from horse_intelligence.prediction.day_store import data_key
+
     mkey = _model_key()
-    return mkey, f"{mkey}|{get_context().repo.last_update()}"
+    return mkey, data_key(get_context().repo.engine, mkey)
 
 
 @st.cache_resource(show_spinner=False, max_entries=4)
 def _day_predictions_cached(day: date, mkey: str, data_key: str,
                             race_ids: tuple[int, ...]) -> dict[int, DayPrediction]:
+    from horse_intelligence.prediction import day_store
+
+    engine = get_context().repo.engine
+    # prédictions rangées par la collecte avec les mêmes données : lecture immédiate
+    try:
+        stored = day_store.load(engine, list(race_ids), data_key)
+    except Exception:  # table absente ou illisible : calcul sur place, comme avant
+        stored = None
+    if stored is not None:
+        return stored
     models = _models(mkey)
+    if not models:
+        return {rid: DayPrediction(rid, None, pd.DataFrame(),
+                                   "Aucun modèle entraîné : lancez scripts/train_models.py.")
+                for rid in race_ids}
     frame = _frame(day, data_key, models_use_source_aggregates(models))
-    return predict_day(get_context().repo.engine, list(race_ids), frame, models)
+    return predict_day(engine, list(race_ids), frame, models)
 
 
 def day_predictions(day: date, race_ids: list[int]) -> dict[int, DayPrediction]:
     """Probabilités de victoire de toutes les courses demandées, en un seul calcul,
     mémorisées tant qu'aucune nouvelle donnée n'arrive (changement d'onglet, de date…)."""
     mkey, data_key = _keys()
-    if not _models(mkey):
-        return {rid: DayPrediction(rid, None, pd.DataFrame(),
-                                   "Aucun modèle entraîné : lancez scripts/train_models.py.")
-                for rid in race_ids}
     return _day_predictions_cached(day, mkey, data_key, tuple(sorted(race_ids)))
 
 
@@ -88,7 +97,7 @@ def _predict(race_id: int, day: date) -> RacePrediction:
     models = _models(mkey)
     if not models:
         return predict_race(engine, race_id)
-    data_key = f"{mkey}|{get_context().repo.last_update()}"
+    _, data_key = _keys()
     frame = _frame(day, data_key, models_use_source_aggregates(models))
     return predict_race(engine, race_id, frame=frame, models=models)
 
