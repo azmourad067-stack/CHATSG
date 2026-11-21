@@ -188,6 +188,11 @@ def search(f: pd.DataFrame, profiles: list[Profile] | None = None,
         "n_positive_both": int(((big["roi_1"] > 0) & (big["roi_2"] > 0)).sum()),
         "n_positive_first": int((big["roi_1"] > 0).sum()),
         "n_positive_second": int((big["roi_2"] > 0).sum()),
+        # pour information (sans valeur de preuve) : les profils positifs sur les 2 moitiés
+        "positive_both": [
+            {"label": r.profile.label(), "roi_1": r.roi_1, "roi_2": r.roi_2,
+             "total": evaluate(f, r.profile)}
+            for r in big[(big["roi_1"] > 0) & (big["roi_2"] > 0)].itertuples()],
         "example": {"label": EXAMPLE.label(), "first": evaluate(first, EXAMPLE),
                     "second": evaluate(second, EXAMPLE), "total": evaluate(f, EXAMPLE)},
     }

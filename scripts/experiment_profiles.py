@@ -44,6 +44,9 @@ def main() -> int:
     print(f"\n[Repère du hasard] parmi {rep['n_big']} profils fournis (≥ 200 paris sur chaque "
           f"moitié) : {rep['n_positive_first']} gagnants sur la 1re moitié, "
           f"{rep['n_positive_second']} sur la 2nde, {rep['n_positive_both']} sur les deux")
+    for b in rep["positive_both"]:
+        print(f"   • {b['label']} : 1re {_pct(b['roi_1'])}, 2nde {_pct(b['roi_2'])} ; "
+              f"total {_line(b['total'])}")
     print(f"\n[Les {len(rep['tested'])} meilleurs profils de la 1re moitié, jugés sur la 2nde ; "
           f"IC à {100 * (1 - rep['alpha']):.1f} % (corrigé pour {len(rep['tested'])} essais)]")
     for i, t in enumerate(rep["tested"], 1):
