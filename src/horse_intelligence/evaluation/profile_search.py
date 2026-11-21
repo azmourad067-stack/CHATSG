@@ -178,6 +178,7 @@ def search(f: pd.DataFrame, profiles: list[Profile] | None = None,
     tested = [{"profile": p, "label": p.label(), "first": evaluate(first, p),
                "second": evaluate(second, p, alpha=alpha)} for p in chosen["profile"]]
     big = both[(both["bets_1"] >= min_bets) & (both["bets_2"] >= min_bets)]
+    pos = big[(big["roi_1"] > 0) & (big["roi_2"] > 0)]
     return {
         "cut": cut, "period": (str(f["race_date"].min()), str(f["race_date"].max())),
         "n_profiles": len(profiles), "n_eligible": len(eligible), "alpha": alpha,
@@ -190,9 +191,9 @@ def search(f: pd.DataFrame, profiles: list[Profile] | None = None,
         "n_positive_second": int((big["roi_2"] > 0).sum()),
         # pour information (sans valeur de preuve) : les profils positifs sur les 2 moitiés
         "positive_both": [
-            {"label": r.profile.label(), "roi_1": r.roi_1, "roi_2": r.roi_2,
-             "total": evaluate(f, r.profile)}
-            for r in big[(big["roi_1"] > 0) & (big["roi_2"] > 0)].itertuples()],
+            {"label": prof.label(), "roi_1": float(r1), "roi_2": float(r2),
+             "total": evaluate(f, prof)}
+            for prof, r1, r2 in zip(pos["profile"], pos["roi_1"], pos["roi_2"], strict=True)],
         "example": {"label": EXAMPLE.label(), "first": evaluate(first, EXAMPLE),
                     "second": evaluate(second, EXAMPLE), "total": evaluate(f, EXAMPLE)},
     }
