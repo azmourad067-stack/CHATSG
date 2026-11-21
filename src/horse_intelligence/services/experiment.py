@@ -845,16 +845,12 @@ TIERCE_STRATEGIES = ("6 premiers du modèle (combiné)", "20 trios les plus prob
                      "6 premiers du marché (repère)")
 
 
-def run_tierce_quinte(engine: Engine, model_col: str = INCUMBENT,
-                      place_col: str = "place_market") -> dict[str, Any]:
-    """20 combinaisons de tiercé par course du quinté (pas de trio sur cette course), sur
-    les prédictions hors échantillon du dernier entraînement, réglées aux rapports officiels
-    ordre / désordre. Critère fixé AVANT de voir les résultats : une des deux stratégies du
-    modèle est rentable sur la 2nde moitié, IC 95 % du ROI entièrement > 0."""
+def _quinte_frame(engine: Engine, cols: list[str]
+                  ) -> tuple[pd.DataFrame, pd.DataFrame, set[int]]:
+    """Prédictions hors échantillon des courses du quinté (marché complet), rapports
+    Internet, ensemble des courses du quinté en base."""
     from sqlalchemy import text
 
-    from horse_intelligence.evaluation import tierce_quinte as tq
-    from horse_intelligence.models.place_model import pl_place_column
     from horse_intelligence.services.training import load_oos_predictions
 
     pred = load_oos_predictions(engine)
@@ -864,14 +860,29 @@ def run_tierce_quinte(engine: Engine, model_col: str = INCUMBENT,
         payouts = pd.read_sql(text("SELECT race_id, pool, bet_type, combination, "
                                    "payout_per_eur FROM payouts WHERE pool = 'INTERNET'"), conn)
     quinte = set(payouts.loc[payouts["bet_type"] == "QUINTE_PLUS", "race_id"].astype(int))
-    cols = [model_col, "mkt_prob", *([place_col] if place_col in pred else [])]
-    strengths = place_col if place_col in pred else model_col
     f = pred[pred["race_id"].isin(quinte)]
+    if f.empty:
+        return f, payouts, quinte
+    f = _with_market(f)
+    cols = [c for c in cols if c in f]
+    f = f[f.groupby("race_id")[cols].transform(lambda s: s.notna().all()).all(axis=1)].copy()
+    return f, payouts, quinte
+
+
+def run_tierce_quinte(engine: Engine, model_col: str = INCUMBENT,
+                      place_col: str = "place_market") -> dict[str, Any]:
+    """20 combinaisons de tiercé par course du quinté (pas de trio sur cette course), sur
+    les prédictions hors échantillon du dernier entraînement, réglées aux rapports officiels
+    ordre / désordre. Critère fixé AVANT de voir les résultats : une des deux stratégies du
+    modèle est rentable sur la 2nde moitié, IC 95 % du ROI entièrement > 0."""
+    from horse_intelligence.evaluation import tierce_quinte as tq
+    from horse_intelligence.models.place_model import pl_place_column
+
+    f, payouts, quinte = _quinte_frame(engine, [model_col, "mkt_prob", place_col])
+    strengths = place_col if place_col in f else model_col
     if f.empty:
         return {"n_quinte": len(quinte), "n_quinte_predicted": 0, "n_quinte_settled": 0,
                 "strengths": strengths, "results": {}, "success": False}
-    f = _with_market(f)
-    f = f[f.groupby("race_id")[cols].transform(lambda s: s.notna().all()).all(axis=1)].copy()
     f["_pl"] = pl_place_column(f, place_col) if place_col in f else f[model_col]
     paid = tq.tierce_results(payouts)
     rng = np.random.default_rng(0)
@@ -893,3 +904,52 @@ def run_tierce_quinte(engine: Engine, model_col: str = INCUMBENT,
         "success": any(results[s].get("2nde moitié", {}).get("roi_ci", (0, 0))[0] > 0
                        for s in TIERCE_STRATEGIES[:2]),
     }
+
+
+QUINTE_FAMILIES = {
+    "combiné du modèle": ("combine", "model", (5, 6, 7, 8, 9, 10)),
+    "1 base du modèle + N": ("base", "model", (4, 5, 6, 7, 8, 9)),
+    "combiné du marché (repère)": ("combine", "market", (5, 6, 7, 8, 9, 10)),
+}
+
+
+def run_quinte_plus(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Quinté+ : nombre de combinaisons contre gain, sur les prédictions hors échantillon,
+    réglé aux rapports officiels (ordre, désordre, bonus 4 / 4sur5, bonus 3).
+
+    Critère fixé AVANT de voir les résultats : pour chaque formule du modèle, le nombre de
+    chevaux N est choisi sur la 1re moitié (meilleur ROI) ; succès si, pour ce N, l'IC 95 %
+    du ROI de la 2nde moitié est entièrement > 0."""
+    from horse_intelligence.evaluation import quinte_plus as qp
+    from horse_intelligence.evaluation import tierce_quinte as tq
+
+    f, payouts, quinte = _quinte_frame(engine, [model_col, "mkt_prob"])
+    out: dict[str, Any] = {"n_quinte": len(quinte), "n_quinte_predicted": 0,
+                           "n_quinte_settled": 0, "families": {}, "chosen": {},
+                           "success": False}
+    if f.empty:
+        return out
+    paid = qp.quinte_results(payouts)
+    out["n_quinte_predicted"] = int(f["race_id"].nunique())
+    out["n_quinte_settled"] = len(set(f["race_id"]) & set(paid))
+    makers = {"combine": qp.combined_tickets, "base": qp.one_base_tickets}
+    for name, (formula, source, sizes) in QUINTE_FAMILIES.items():
+        col = model_col if source == "model" else "mkt_prob"
+        fam: dict[int, dict[str, Any]] = {}
+        for n in sizes:
+            def make(g: pd.DataFrame, n: int = n, formula: str = formula,
+                     col: str = col) -> list[tuple[int, ...]]:
+                return makers[formula](g["num_pmu"].to_numpy(), g[col].to_numpy(), n)
+
+            res = qp.simulate(f, paid, make)
+            fam[n] = {"n_tickets": qp.n_tickets(formula, n), "periods": tq.by_period(res),
+                      "ranks": qp.rank_rates(res)}
+        out["families"][name] = fam
+        if source == "model":
+            best = max(sizes, key=lambda n: fam[n]["periods"].get("1re moitié", {})
+                       .get("roi", -np.inf))
+            out["chosen"][name] = best
+    out["success"] = any(
+        out["families"][name][n]["periods"].get("2nde moitié", {}).get("roi_ci", (0, 0))[0] > 0
+        for name, n in out["chosen"].items())
+    return out

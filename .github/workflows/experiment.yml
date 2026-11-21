@@ -15,6 +15,7 @@
 #   tuning : réglage de LightGBM choisi sur la 1re moitié des plis, jugé sur la 2nde
 #   tuning_large : réglage « large » contre la production, sur chaque moitié des plis
 #   tierce_quinte : 20 combinaisons de tiercé par quinté (rattrape d'abord les rapports désordre)
+#   quinte_plus : Quinté+, nombre de combinaisons contre gain (combinés, 1 base)
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -25,7 +26,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -113,6 +114,9 @@ jobs:
       - name: Tiercé du quinté, 20 combinaisons
         if: env.EXPERIMENT == 'tierce_quinte'
         run: python scripts/experiment_tierce_quinte.py
+      - name: Quinté+, nombre de combinaisons contre gain
+        if: env.EXPERIMENT == 'quinte_plus'
+        run: python scripts/experiment_quinte_plus.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py
