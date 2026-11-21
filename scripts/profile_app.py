@@ -18,6 +18,7 @@ from horse_intelligence.monitoring.logging_config import configure_logging
 from horse_intelligence.prediction.race_predictor import (
     load_models,
     models_use_source_aggregates,
+    predict_day,
     predict_race,
 )
 from horse_intelligence.services.context import build_context
@@ -60,6 +61,10 @@ def main() -> int:
     for rid in national:
         repo.entries_as_of(int(rid))
     lap(f"entries_as_of × {len(national)}")
+    predict_day(engine, [int(r) for r in national], frame, models)
+    lap(f"predict_day (nouveau : toutes les courses en un calcul, {len(national)})")
+    repo.entries_for_races([int(r) for r in national])
+    lap("entries_for_races (nouveau : une seule requête)")
     day_frame = frame[frame["race_id"].isin(national)]
     primary = models.get("lgbm_market") or models.get("lgbm_form")
     if primary is not None and primary.lgbm is not None:

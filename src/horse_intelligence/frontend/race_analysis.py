@@ -17,11 +17,13 @@ from horse_intelligence.frontend.components.cards import (
 )
 from horse_intelligence.frontend.state import format_dt, get_context
 from horse_intelligence.prediction.race_predictor import (
+    DayPrediction,
     LoadedFamily,
     RacePrediction,
     build_frame,
     load_models,
     models_use_source_aggregates,
+    predict_day,
     predict_race,
 )
 
@@ -52,6 +54,32 @@ def _model_key() -> str:
     metas = [latest_model(engine, f) for f in ("lgbm_market", "lgbm_form", "market_calibrated",
                                                 "place_market")]
     return "|".join(str(m["version"]) if m else "-" for m in metas)
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _keys() -> tuple[str, str]:
+    """(clé des modèles, clé des données), relues au plus toutes les 30 secondes."""
+    mkey = _model_key()
+    return mkey, f"{mkey}|{get_context().repo.last_update()}"
+
+
+@st.cache_resource(show_spinner=False, max_entries=4)
+def _day_predictions_cached(day: date, mkey: str, data_key: str,
+                            race_ids: tuple[int, ...]) -> dict[int, DayPrediction]:
+    models = _models(mkey)
+    frame = _frame(day, data_key, models_use_source_aggregates(models))
+    return predict_day(get_context().repo.engine, list(race_ids), frame, models)
+
+
+def day_predictions(day: date, race_ids: list[int]) -> dict[int, DayPrediction]:
+    """Probabilités de victoire de toutes les courses demandées, en un seul calcul,
+    mémorisées tant qu'aucune nouvelle donnée n'arrive (changement d'onglet, de date…)."""
+    mkey, data_key = _keys()
+    if not _models(mkey):
+        return {rid: DayPrediction(rid, None, pd.DataFrame(),
+                                   "Aucun modèle entraîné : lancez scripts/train_models.py.")
+                for rid in race_ids}
+    return _day_predictions_cached(day, mkey, data_key, tuple(sorted(race_ids)))
 
 
 def _predict(race_id: int, day: date) -> RacePrediction:
