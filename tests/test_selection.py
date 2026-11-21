@@ -121,9 +121,9 @@ def test_profile_tab_matches_tested_profile() -> None:
     from horse_intelligence.frontend import selection as sel
 
     tested = Profile((4, 6), (20.0, 50.0), "trot_attele", (15, 99), True, "gagnant")
-    assert (sel.PROFILE_RANKS, sel.PROFILE_ODDS, sel.PROFILE_DISCIPLINE,
-            sel.PROFILE_MIN_RUNNERS) == (tested.rank, tested.odds, tested.discipline,
-                                         tested.runners[0])
+    app_profile = (sel.PROFILE_RANKS, sel.PROFILE_ODDS, sel.PROFILE_DISCIPLINE,
+                   sel.PROFILE_MIN_RUNNERS)
+    assert app_profile == (tested.rank, tested.odds, tested.discipline, tested.runners[0])
 
 
 def test_profile_picks_rank_odds_and_edge() -> None:
