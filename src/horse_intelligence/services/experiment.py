@@ -953,3 +953,28 @@ def run_quinte_plus(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any
         out["families"][name][n]["periods"].get("2nde moitié", {}).get("roi_ci", (0, 0))[0] > 0
         for name, n in out["chosen"].items())
     return out
+
+
+def run_profile_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Profils de course (rang du modèle × cote × discipline × partants × avantage) pour le
+    simple gagnant / placé : sélection sur la 1re moitié, jugement sur la 2nde avec un IC
+    corrigé pour le nombre de profils retenus (protocole fixé dans profile_search)."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import profile_search as ps
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    pred = _with_market(pred)
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type IN ('SIMPLE_GAGNANT', 'SIMPLE_PLACE')"),
+            conn)
+    f = ps.prepare(pred, payouts, model_col)
+    f = f[f["profit_gagnant"].notna() | f["profit_placé"].notna()]
+    if f.empty:
+        return {"n_races": 0, "success": False, "tested": []}
+    return {"n_races": int(f["race_id"].nunique()), **ps.search(f)}
