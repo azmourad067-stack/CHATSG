@@ -114,3 +114,29 @@ def test_frozen_rule_split_by_audience(repo) -> None:  # type: ignore[no-untyped
     assert tot == (rep["rule"]["nationales"]["total"]["n_bets"]
                    + rep["rule"]["régionales"]["total"]["n_bets"])
     assert set(rep["rule_place"]) == {"toutes", "nationales", "régionales"}
+
+
+def test_profile_tab_matches_tested_profile() -> None:
+    from horse_intelligence.evaluation.profile_search import Profile
+    from horse_intelligence.frontend import selection as sel
+
+    tested = Profile((4, 6), (20.0, 50.0), "trot_attele", (15, 99), True, "gagnant")
+    assert (sel.PROFILE_RANKS, sel.PROFILE_ODDS, sel.PROFILE_DISCIPLINE,
+            sel.PROFILE_MIN_RUNNERS) == (tested.rank, tested.odds, tested.discipline,
+                                         tested.runners[0])
+
+
+def test_profile_picks_rank_odds_and_edge() -> None:
+    from horse_intelligence.frontend.selection import profile_picks
+
+    n = 16
+    p = [0.20, 0.15, 0.12, 0.08, 0.06, 0.05] + [0.034] * 10
+    mkt = [0.20, 0.15, 0.12, 0.03, 0.03, 0.06] + [0.034] * 10
+    odds = [4.0, 5.0, 6.0, 30.0, 50.0, 25.0] + [25.0] * 10
+    table = pd.DataFrame({"num_pmu": range(1, n + 1), "p_win": p, "mkt_prob": mkt,
+                          "mkt_odds": odds})
+    # 4e (cote 30, modèle > marché) et 5e (cote 50 incluse) ; 6e : modèle < marché
+    assert profile_picks(table)["num_pmu"].tolist() == [4, 5]
+    assert profile_picks(table.head(14)).empty  # moins de 15 partants
+    no_odds = table.assign(mkt_odds=[*odds[:-1], float("nan")])
+    assert profile_picks(no_odds).empty
