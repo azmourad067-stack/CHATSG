@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from itertools import combinations
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -84,12 +84,13 @@ def simulate(pred: pd.DataFrame, paid: dict[int, dict[str, Any]],
     """Une ligne par quinté : mise, retour, trio trouvé, ordre exact."""
     rows = []
     for rid, g in pred.groupby("race_id", sort=False):
-        race = paid.get(int(rid))  # type: ignore[call-overload]
+        rid_i = int(cast(int, rid))
+        race = paid.get(rid_i)
         if race is None:
             continue
         tickets = make_tickets(g)
         ret, exact = ticket_return(tickets, race)
-        rows.append({"race_id": int(rid),  # type: ignore[call-overload]
+        rows.append({"race_id": rid_i,
                      "race_date": g["race_date"].iloc[0], "stake": float(len(tickets)),
                      "ret": ret, "hit": ret > 0, "exact": exact})
     cols = ["race_id", "race_date", "stake", "ret", "hit", "exact"]
