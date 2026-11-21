@@ -17,7 +17,7 @@ Mise : 1 € par cheval retenu, réglé au rapport définitif de la masse Intern
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import product
 from typing import Any, cast
 
@@ -60,6 +60,10 @@ class Profile:
 
 
 EXAMPLE = Profile((2, 5), (4.0, 9.0), "trot_attele", (10, 14), False, "gagnant")
+# profil affiché dans l'application (onglet « Outsiders attelé ») et ses variantes
+OUTSIDERS = Profile((4, 6), (20.0, 50.0), "trot_attele", (15, 99), True, "gagnant")
+FOLLOWED = (OUTSIDERS, replace(OUTSIDERS, bet="placé"),
+            replace(OUTSIDERS, bet="placé", edge=False))
 
 
 def profile_grid() -> list[Profile]:
@@ -195,6 +199,9 @@ def search(f: pd.DataFrame, profiles: list[Profile] | None = None,
              "total": evaluate(f, prof)}
             for prof, r1, r2 in zip(cast(list[Profile], pos["profile"].tolist()),
                                     pos["roi_1"].tolist(), pos["roi_2"].tolist(), strict=True)],
+        "followed": [{"label": p.label(), "first": evaluate(first, p),
+                      "second": evaluate(second, p), "total": evaluate(f, p)}
+                     for p in FOLLOWED],
         "example": {"label": EXAMPLE.label(), "first": evaluate(first, EXAMPLE),
                     "second": evaluate(second, EXAMPLE), "total": evaluate(f, EXAMPLE)},
     }

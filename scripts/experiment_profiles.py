@@ -41,6 +41,10 @@ def main() -> int:
     print(f"\n[Votre exemple : {ex['label']}]")
     for k, name in (("first", "1re moitié"), ("second", "2nde moitié"), ("total", "total")):
         print(f"  {name:12s} {_line(ex[k])}")
+    for fol in rep["followed"]:
+        print(f"\n[Suivi : {fol['label']}]")
+        for k, name in (("first", "1re moitié"), ("second", "2nde moitié"), ("total", "total")):
+            print(f"  {name:12s} {_line(fol[k])}")
     print(f"\n[Repère du hasard] parmi {rep['n_big']} profils fournis (≥ 200 paris sur chaque "
           f"moitié) : {rep['n_positive_first']} gagnants sur la 1re moitié, "
           f"{rep['n_positive_second']} sur la 2nde, {rep['n_positive_both']} sur les deux")
