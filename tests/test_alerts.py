@@ -1,0 +1,91 @@
+"""Alertes SMS : créneau avant départ, un seul message par cheval, erreurs Free Mobile."""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from types import SimpleNamespace
+
+import pandas as pd
+import pytest
+from sqlalchemy import select, update
+
+from horse_intelligence import alerts
+from horse_intelligence.data.storage import database as db
+from horse_intelligence.prediction.race_predictor import DayPrediction
+
+P = [0.25, 0.18, 0.12, 0.10, 0.09, 0.07, 0.06, 0.05, 0.04, 0.04]
+ODDS = [3.0, 5.0, 8.0, 12.0, 20.0, 9.0, 15.0, 18.0, 30.0, 40.0]  # retient le n°5
+
+
+def _table() -> pd.DataFrame:
+    t = pd.DataFrame({"num_pmu": range(1, 11), "horse_id": range(1, 11), "p_win": P,
+                      "mkt_odds": ODDS, "mkt_prob": P})
+    t["rank"] = t["p_win"].rank(ascending=False, method="min")
+    return t
+
+
+@pytest.fixture
+def setup(repo):  # type: ignore[no-untyped-def]
+    from tests.synthetic import populate
+
+    populate(repo, days=2)
+    with repo.engine.connect() as conn:
+        rows = conn.execute(select(db.races.c.race_id, db.races.c.scheduled_start_utc)
+                            .order_by(db.races.c.race_id).limit(3)).all()
+    preds = {int(r.race_id): DayPrediction(int(r.race_id), "lgbm_market", _table())
+             for r in rows}
+    return repo, rows, preds
+
+
+def test_one_sms_per_horse_inside_window_only(setup) -> None:  # type: ignore[no-untyped-def]
+    repo, rows, preds = setup
+    first = rows[0]
+    now = first.scheduled_start_utc - timedelta(minutes=15)
+    sent: list[str] = []
+    n = alerts.send_alerts(repo.engine, {first.race_id: preds[first.race_id]}, sent.append,
+                           now)
+    assert n == 1 and "n°5" in sent[0] and "Valeur 4e-6e" in sent[0]
+    assert "09 74 75 13 13" in sent[0]
+    # collecte suivante, toujours dans le créneau : pas de doublon
+    assert alerts.send_alerts(repo.engine, preds, sent.append, now + timedelta(minutes=5)) == 0
+    # trop tôt (40 min avant) ou trop tard (5 min avant) : rien
+    early = alerts.due_alerts(repo.engine, {first.race_id: preds[first.race_id]},
+                              first.scheduled_start_utc - timedelta(minutes=40))
+    assert early == []
+    with repo.engine.begin() as conn:
+        conn.execute(db.alerts_sent.delete())
+    late = alerts.due_alerts(repo.engine, {first.race_id: preds[first.race_id]},
+                             first.scheduled_start_utc - timedelta(minutes=5))
+    assert late == []
+
+
+def test_regional_races_and_unpriced_races_are_skipped(setup) -> None:  # type: ignore[no-untyped-def]
+    repo, rows, preds = setup
+    first = rows[0]
+    now = first.scheduled_start_utc - timedelta(minutes=15)
+    with repo.engine.begin() as conn:
+        conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
+                     .values(audience="REGIONAL"))
+    assert all(a.race_id != first.race_id for a in alerts.due_alerts(repo.engine, preds, now))
+    with repo.engine.begin() as conn:
+        conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
+                     .values(audience="NATIONAL"))
+    no_odds = {first.race_id: DayPrediction(first.race_id, "lgbm_form", _table())}
+    assert alerts.due_alerts(repo.engine, no_odds, now) == []
+
+
+def test_free_mobile_sender(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls = []
+
+    def fake_post(url, json, timeout):  # type: ignore[no-untyped-def]
+        calls.append((url, json))
+        return SimpleNamespace(status_code=200 if json["pass"] == "bonne" else 403)
+
+    monkeypatch.setattr(alerts.requests, "post", fake_post)
+    alerts.free_mobile_sender("12345678", "bonne")("Bonjour")
+    assert calls[0] == (alerts.FREE_MOBILE_URL,
+                        {"user": "12345678", "pass": "bonne", "msg": "Bonjour"})
+    with pytest.raises(alerts.AlertError, match="identifiants"):
+        alerts.free_mobile_sender("12345678", "fausse")("Bonjour")
+    monkeypatch.delenv("FREE_MOBILE_USER", raising=False)
+    assert alerts.sender_from_env() is None

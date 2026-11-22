@@ -30,6 +30,10 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       HI_DATA_DIR: ${{ github.workspace }}/data_store
+      # alertes SMS (facultatives) : identifiant et clé de l'option « Notifications par
+      # SMS » de l'espace abonné Free Mobile ; sans eux, aucune alerte n'est envoyée
+      FREE_MOBILE_USER: ${{ secrets.FREE_MOBILE_USER }}
+      FREE_MOBILE_KEY: ${{ secrets.FREE_MOBILE_KEY }}
     steps:
       - name: Vérifier la configuration
         id: cfg

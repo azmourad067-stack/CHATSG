@@ -374,6 +374,16 @@ day_prediction_runners = Table(
     Column("rank", Float),
 )
 
+# Alertes de pari déjà envoyées (une seule par règle, course et cheval).
+alerts_sent = Table(
+    "alerts_sent", metadata,
+    Column("rule", String(40), primary_key=True),
+    Column("race_id", ForeignKey("races.race_id"), primary_key=True),
+    Column("num_pmu", Integer, primary_key=True),
+    Column("channel", String(20), nullable=False),
+    Column("sent_at", UTCDateTime, nullable=False),
+)
+
 prediction_explanations = Table(
     "prediction_explanations", metadata,
     Column("explanation_id", Integer, primary_key=True, autoincrement=True),
