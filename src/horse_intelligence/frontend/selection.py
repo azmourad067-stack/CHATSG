@@ -4,6 +4,7 @@
 2. « Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, espérance ≥ +10 %, gagnant »,
    figée le 21/11/2026 (evaluation/forward_rules.py) à la demande de l'utilisateur : seule
    famille positive sur les trois périodes de la grande recherche, mais NON significative.
+   Toutes réunions ouvertes aux paris en ligne (cotes Internet), comme dans la recherche.
    Le profil « outsiders attelé », ajouté puis retiré le 21/11/2026, n'est plus affiché :
    −70 % sur les six derniers mois de la grande recherche.
 
@@ -20,7 +21,7 @@ fixes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 from zoneinfo import ZoneInfo
@@ -30,7 +31,11 @@ import streamlit as st
 from sqlalchemy import select
 
 from horse_intelligence.data.storage import database as db
-from horse_intelligence.evaluation.forward_rules import VALUE_46, rule_picks
+from horse_intelligence.evaluation.forward_rules import (
+    VALUE_46,
+    races_with_internet_odds,
+    rule_picks,
+)
 from horse_intelligence.evaluation.segment_analysis import race_group
 from horse_intelligence.frontend.components.cards import notice
 from horse_intelligence.frontend.race_analysis import day_predictions
@@ -40,7 +45,7 @@ PARIS = ZoneInfo("Europe/Paris")
 RULE_GROUP = "Trot G"
 RULE_RANK = 3  # 3e cheval du modèle
 RULE_MODEL = "lgbm_market"
-# réunions régionales : absentes du programme national de pmu.fr, souvent sans pari en ligne
+# réunions régionales et locales : hors du périmètre testé pour la règle trot G
 REGIONAL_AUDIENCES = ("LOCAL", "REGIONAL")
 
 
@@ -102,6 +107,7 @@ class DayData:
 
     preds: dict[int, Any]
     entries: dict[int, pd.DataFrame]
+    online: set[int] = field(default_factory=set)  # cotes Internet publiées
 
     def pred(self, race_id: int) -> Any:
         return self.preds.get(race_id)
@@ -120,10 +126,12 @@ def _day_data(day: date, races: pd.DataFrame) -> DayData:
         return DayData({}, {})
     with st.spinner("Calcul des probabilités…"):
         preds = day_predictions(day, ids)
-        entries = get_context().repo.entries_for_races(ids)
+        repo = get_context().repo
+        entries = repo.entries_for_races(ids)
+        online = races_with_internet_odds(repo.engine, ids)
     by_race = {int(cast(int, rid)): g.reset_index(drop=True)
                for rid, g in entries.groupby("race_id")} if not entries.empty else {}
-    return DayData(preds, by_race)
+    return DayData(preds, by_race, online)
 
 
 def render() -> None:
@@ -141,12 +149,12 @@ def render() -> None:
     all_races = _races_on(day)
     national = national_races(all_races)
     n_regional = len(all_races) - len(national)
-    data = _day_data(day, national)
+    data = _day_data(day, all_races)
     tab_g, tab_value = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)"])
     with tab_g:
         _render_trot_g(national, n_regional, data)
     with tab_value:
-        _render_value(national, n_regional, data)
+        _render_value(all_races, data)
     st.caption(
         "Heures de Paris. Le classement tient compte des cotes, il peut changer jusqu'au "
         "départ : consultez la page 10 à 20 minutes avant la course (les données sont "
@@ -191,8 +199,8 @@ def _render_trot_g(national: pd.DataFrame, n_regional: int, data: DayData) -> No
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     if n_regional:
-        st.caption(f"{n_regional} course(s) de réunions régionales exclue(s) : elles ne "
-                   "figurent pas au programme national de pmu.fr.")
+        st.caption(f"{n_regional} course(s) de réunions régionales ou locales non prises en "
+                   "compte : la règle trot G n'a été testée que sur les réunions nationales.")
 
 
 DISCIPLINE_NAMES = {"trot_attele": "trot attelé", "trot_monte": "trot monté", "plat": "plat",
@@ -221,7 +229,10 @@ def watch_state(table: pd.DataFrame, picks: pd.DataFrame, started: bool,
     return "aucun cheval retenu pour l'instant"
 
 
-def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> None:
+AUDIENCE_NAMES = {"NATIONAL": "nationale", "REGIONAL": "régionale", "LOCAL": "locale"}
+
+
+def _render_value(races: pd.DataFrame, data: DayData) -> None:
     rule = VALUE_46
     st.warning(
         "Règle NON validée, figée le 21/11/2026 pour être jugée sur les courses à venir : "
@@ -229,18 +240,21 @@ def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> Non
         "+10 %, simple gagnant ». Sur deux ans de tests elle a donné +22,6 %, puis +41,8 %, "
         "puis +22,0 % sur les six derniers mois, mais avec une marge d'erreur de −29 % à "
         "+76 % : c'est peut-être de la chance (8 640 stratégies essayées). Environ 800 "
-        "paris par an, environ 1 gagnant sur 9. À suivre de façon fictive, ou avec de très "
-        "petites mises fixes.")
-    if national.empty:
-        notice("Aucune course ce jour-là au programme national.")
+        "paris par an (toutes réunions ouvertes aux paris en ligne), environ 1 gagnant sur "
+        "9. À suivre de façon fictive, ou avec de très petites mises fixes.")
+    if races.empty:
+        notice("Aucune course ce jour-là.")
         return
     now = datetime.now(UTC)
     rows, watch = [], []
-    for r in national.to_dict("records"):
+    empty = pd.DataFrame(columns=["num_pmu", "horse_id", "p_win", "mkt_odds"])
+    for r in races.to_dict("records"):
         rid = int(r["race_id"])
         pred = data.pred(rid)
-        table = pred.table if pred is not None and pred.primary == RULE_MODEL \
-            else pd.DataFrame(columns=["num_pmu", "horse_id", "p_win", "mkt_odds"])
+        priced = pred is not None and pred.primary == RULE_MODEL
+        online = rid in data.online
+        # la règle n'est jouée que là où le pari en ligne est ouvert (cotes Internet)
+        table = pred.table if priced and online else empty
         entries = data.runners(rid)
         n = len(table) if not table.empty else n_starters(entries)
         if not rule.runners[0] <= n <= rule.runners[1]:
@@ -258,9 +272,12 @@ def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> Non
             else _paris_time(start_ts - CHECK_BEFORE),
             "Course": f"R{r['reunion_num']}C{r['course_num']}",
             "Hippodrome": r["racecourse"] or "?",
+            "Réunion": AUDIENCE_NAMES.get(str(r.get("audience")), "nationale"),
             "Discipline": DISCIPLINE_NAMES.get(str(r["discipline"]), "?"),
             "Partants": n,
-            "État": watch_state(table, picks, started, bool(r["result_final"])),
+            "État": "pas de pari en ligne (aucune cote Internet)"
+            if priced and not online and not bool(r["result_final"])
+            else watch_state(table, picks, started, bool(r["result_final"])),
         })
         if picks.empty:
             continue
@@ -282,7 +299,7 @@ def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> Non
                 "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
             })
     if not watch:
-        notice("Aucune course de 10 à 14 partants ce jour-là au programme national.")
+        notice("Aucune course de 10 à 14 partants ce jour-là.")
         return
     watch_df = pd.DataFrame(watch).sort_values("_start", na_position="last")
     upcoming = watch_df[watch_df["_start"].notna() & (watch_df["_start"] > now)]
@@ -298,12 +315,11 @@ def _render_value(national: pd.DataFrame, n_regional: int, data: DayData) -> Non
                "revenez 10 minutes avant chaque course ci-dessous.")
     st.subheader(f"Courses à surveiller ({len(watch_df)})")
     st.dataframe(watch_df.drop(columns="_start"), hide_index=True, width="stretch")
-    notes = ["Courses du programme national de 10 à 14 partants : la règle ne peut retenir "
-             "un cheval que dans celles-ci. Le choix dépend des cotes, qui bougent jusqu'au "
-             "départ : rafraîchissez la page à l'heure « Consulter vers » et jouez les "
-             "chevaux retenus à ce moment-là, sans revenir dessus."]
-    if n_regional:
-        notes.append(f"{n_regional} course(s) de réunions régionales exclue(s).")
+    notes = ["Courses de 10 à 14 partants, toutes réunions (nationales, régionales, "
+             "locales) : la règle ne peut retenir un cheval que dans celles-ci, et seulement "
+             "si le pari en ligne y est ouvert (cotes Internet publiées). Le choix dépend des "
+             "cotes, qui bougent jusqu'au départ : rafraîchissez la page à l'heure « Consulter "
+             "vers » et jouez les chevaux retenus à ce moment-là, sans revenir dessus."]
     st.caption(" ".join(notes) + " Une même course peut donner plusieurs chevaux (1 € "
                "chacun dans les tests). L'espérance est calculée sur la cote de référence "
                "× 0,90 : ce n'est pas un gain garanti.")
