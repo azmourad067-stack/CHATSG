@@ -3,15 +3,22 @@
 « Valeur 4e-6e » : 4e à 6e du modèle, cote de référence dans ]9 ; 20], 10 à 14 partants,
 espérance du modèle ≥ +10 % (probabilité du modèle × cote × 0,90 − 1, le facteur 0,90
 étant l'écart observé entre cote de référence et rapport final des gagnants), simple
-gagnant, toutes disciplines. Seule famille positive sur les trois périodes de la grande
-recherche (23/11/2024 → 15/11/2026) : +22,6 %, +41,8 %, +22,0 % (IC du test final
-[−29 % ; +76 %]) ; NON significative après 8 640 essais. Elle ne doit plus être modifiée.
+gagnant, toutes disciplines, toutes réunions (nationales, régionales, locales) dès que les
+paris en ligne sont ouverts, comme dans la grande recherche. Seule famille positive sur
+les trois périodes de cette recherche (23/11/2024 → 15/11/2026) : +22,6 %, +41,8 %,
++22,0 % (IC du test final [−29 % ; +76 %]) ; NON significative après 8 640 essais. Elle
+ne doit plus être modifiée.
 
 Jugement : sur les prédictions enregistrées AVANT le départ (table `predictions`, la
 dernière de chaque course), à partir du lendemain du gel ; règlement au rapport définitif
-Internet. Critère fixé à l'avance : ROI > 0 avec un IC 95 % (rééchantillonnage des
-courses) entièrement au-dessus de zéro, sur au moins MIN_BETS_VERDICT paris. Avant ce
-volume, le bilan est seulement intermédiaire.
+Internet (une course sans rapport Internet, donc sans pari en ligne, n'est pas comptée).
+Critère fixé à l'avance : ROI > 0 avec un IC 95 % (rééchantillonnage des courses)
+entièrement au-dessus de zéro, sur au moins MIN_BETS_VERDICT paris. Avant ce volume, le
+bilan est seulement intermédiaire.
+
+Correction du 22/11/2026, avant tout résultat de la période de suivi : l'application et le
+bilan ne gardaient que les réunions nationales, alors que la règle a été trouvée sur toutes
+les réunions ; ils suivent désormais la règle telle qu'elle a été testée.
 """
 
 from __future__ import annotations
@@ -88,7 +95,7 @@ def _last_predictions(engine: Engine, first_day: date) -> pd.DataFrame:
 
 
 def forward_bets(engine: Engine, rule: ValueRule = VALUE_46,
-                 national_only: bool = True) -> pd.DataFrame:
+                 national_only: bool = False) -> pd.DataFrame:
     """Paris de la règle sur les prédictions enregistrées avant le départ (dernière
     prédiction de chaque course), courses réglées seulement."""
     entries = _last_predictions(engine, rule.first_day)
@@ -113,6 +120,21 @@ def forward_bets(engine: Engine, rule: ValueRule = VALUE_46,
                          "profit": paid.get((rid_i, str(int(pick["num_pmu"]))), 0.0) - 1.0})
     return pd.DataFrame(rows, columns=["race_id", "race_date", "num_pmu", "mkt_odds",
                                        "profit"])
+
+
+def races_with_internet_odds(engine: Engine, race_ids: list[int]) -> set[int]:
+    """Courses dont des cotes Internet ont été publiées : le pari en ligne y est ouvert."""
+    if not race_ids:
+        return set()
+    from sqlalchemy import select
+
+    from horse_intelligence.data.storage import database as db
+
+    o = db.odds_snapshots
+    with engine.connect() as conn:
+        rows = conn.execute(select(o.c.race_id).distinct().where(
+            o.c.race_id.in_([int(r) for r in race_ids]), o.c.pool == "INTERNET")).all()
+    return {int(r.race_id) for r in rows}
 
 
 def forward_trot_g(engine: Engine, first_day: date = VALUE_46.first_day) -> pd.DataFrame:

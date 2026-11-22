@@ -59,19 +59,24 @@ def test_one_sms_per_horse_inside_window_only(setup) -> None:  # type: ignore[no
     assert late == []
 
 
-def test_regional_races_and_unpriced_races_are_skipped(setup) -> None:  # type: ignore[no-untyped-def]
+def test_regional_races_alerted_only_when_online_betting_is_open(setup) -> None:  # type: ignore[no-untyped-def]
     repo, rows, preds = setup
     first = rows[0]
     now = first.scheduled_start_utc - timedelta(minutes=15)
+    one = {first.race_id: preds[first.race_id]}
     with repo.engine.begin() as conn:
         conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
                      .values(audience="REGIONAL"))
-    assert all(a.race_id != first.race_id for a in alerts.due_alerts(repo.engine, preds, now))
+    # réunion régionale avec cotes Internet : la règle s'applique, comme dans les tests
+    assert [a.race_id for a in alerts.due_alerts(repo.engine, one, now)] == [first.race_id]
+    # sans cote Internet (pas de pari en ligne) : aucune alerte
     with repo.engine.begin() as conn:
-        conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
-                     .values(audience="NATIONAL"))
-    no_odds = {first.race_id: DayPrediction(first.race_id, "lgbm_form", _table())}
-    assert alerts.due_alerts(repo.engine, no_odds, now) == []
+        conn.execute(update(db.odds_snapshots)
+                     .where(db.odds_snapshots.c.race_id == first.race_id)
+                     .values(pool="OFFLINE"))
+    assert alerts.due_alerts(repo.engine, one, now) == []
+    no_market_model = {first.race_id: DayPrediction(first.race_id, "lgbm_form", _table())}
+    assert alerts.due_alerts(repo.engine, no_market_model, now) == []
 
 
 def test_free_mobile_sender(monkeypatch) -> None:  # type: ignore[no-untyped-def]

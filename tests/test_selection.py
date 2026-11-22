@@ -152,9 +152,10 @@ def _value_tab_script() -> None:
         "discipline": ["trot_attele", "plat", "plat"], "distance_m": [2700, 1600, 1600],
         "scheduled_start_utc": pd.to_datetime(["2099-01-01 12:00", "2099-01-01 13:00",
                                                "2099-01-01 14:00"]),
-        "result_final": [False, False, False], "audience": ["NATIONAL"] * 3,
+        "result_final": [False, False, False],
+        "audience": ["NATIONAL", "REGIONAL", "LOCAL"],
         "racecourse": ["VINCENNES", "PAU", "PAU"]})
-    sel._render_value(races, 0, sel._day_data(date(2099, 1, 1), races))
+    sel._render_value(races, sel._day_data(date(2099, 1, 1), races))
 
 
 def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -183,9 +184,10 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
                         "status": ["PARTANT"] * 12})
     entries = pd.concat([one.head(10).assign(race_id=1), one.assign(race_id=2),
                          one.head(8).assign(race_id=3)])
-    repo = SimpleNamespace(entries_for_races=lambda ids: entries,
+    repo = SimpleNamespace(engine=None, entries_for_races=lambda ids: entries,
                            results_for=lambda rid: pd.DataFrame())
     monkeypatch.setattr(sel, "day_predictions", fake_day_predictions)
+    monkeypatch.setattr(sel, "races_with_internet_odds", lambda engine, ids: {1, 2, 3})
     monkeypatch.setattr(sel, "get_context", lambda: SimpleNamespace(repo=repo))
     at = AppTest.from_function(_value_tab_script, default_timeout=30)
     at.run()
@@ -195,5 +197,6 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
     # course 3 (8 partants) absente ; course 2 (12 partants, sans cotes) à surveiller
     assert watch["Course"].tolist() == ["R1C1", "R1C2"]
     assert watch["État"].iloc[1].startswith("cotes pas encore publiées")
+    assert watch["Réunion"].tolist() == ["nationale", "régionale"]  # régionales incluses
     assert watch["Consulter vers"].iloc[0] != "—"
     assert any("Prochaine course à surveiller : R1C1" in i.value for i in at.info)

@@ -41,7 +41,8 @@ def main() -> int:
     engine = build_context().repo.engine
     print(f"Règles jugées à partir du {VALUE_46.first_day} (gel le {VALUE_46.frozen_on}) ; "
           f"verdict à partir de {MIN_BETS_VERDICT} paris")
-    _print(VALUE_46.name, verdict(forward_bets(engine)))
+    _print(f"{VALUE_46.name} (toutes réunions ouvertes aux paris en ligne)",
+           verdict(forward_bets(engine)))
     _print("3e du modèle, gagnant, trot G (réunions nationales)",
            verdict(forward_trot_g(engine)))
     return 0

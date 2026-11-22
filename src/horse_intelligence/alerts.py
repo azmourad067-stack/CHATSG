@@ -1,9 +1,10 @@
 """Alertes de pari par SMS (API « Notifications par SMS » de Free Mobile).
 
-À chaque collecte (toutes les 15 min), les courses du programme national qui partent dans
-ALERT_WINDOW minutes sont examinées avec la règle figée « Valeur 4e-6e » : chaque cheval
-retenu fait l'objet d'UN seul SMS, envoyé environ 10 à 25 minutes avant le départ. Les
-choix dépendent des cotes du moment : ils peuvent encore changer jusqu'au départ.
+À chaque collecte (toutes les 15 min), les courses ouvertes aux paris en ligne (cotes
+Internet publiées, toutes réunions) qui partent dans ALERT_WINDOW minutes sont examinées
+avec la règle figée « Valeur 4e-6e » : chaque cheval retenu fait l'objet d'UN seul SMS,
+envoyé environ 10 à 25 minutes avant le départ. Les choix dépendent des cotes du moment :
+ils peuvent encore changer jusqu'au départ.
 
 Identifiants Free Mobile : secrets GitHub FREE_MOBILE_USER et FREE_MOBILE_KEY (jamais dans
 le code). Sans eux, rien n'est envoyé.
@@ -23,7 +24,11 @@ import requests
 from sqlalchemy import Engine, insert, select
 
 from horse_intelligence.data.storage import database as db
-from horse_intelligence.evaluation.forward_rules import VALUE_46, rule_picks
+from horse_intelligence.evaluation.forward_rules import (
+    VALUE_46,
+    races_with_internet_odds,
+    rule_picks,
+)
 from horse_intelligence.prediction.race_predictor import DayPrediction
 
 FREE_MOBILE_URL = "https://smsapi.free-mobile.fr/sendmsg"
@@ -31,7 +36,6 @@ ALERT_WINDOW = (timedelta(minutes=8), timedelta(minutes=25))
 RULE_NAME = "valeur_4e_6e"
 RULE_MODEL = "lgbm_market"
 PARIS = ZoneInfo("Europe/Paris")
-REGIONAL = ("LOCAL", "REGIONAL")
 FREE_MOBILE_ERRORS = {400: "paramètre manquant", 402: "trop de SMS envoyés en peu de temps",
                       403: "service non activé ou identifiants faux",
                       500: "erreur du serveur Free Mobile"}
@@ -84,8 +88,8 @@ def format_alert(race: dict[str, Any], picks: pd.DataFrame, names: dict[int, str
 
 def due_alerts(engine: Engine, preds: dict[int, DayPrediction], now: datetime
                ) -> list[Alert]:
-    """Alertes à envoyer maintenant (courses nationales partant dans ALERT_WINDOW, chevaux
-    retenus par la règle et pas encore signalés)."""
+    """Alertes à envoyer maintenant (courses ouvertes aux paris en ligne partant dans
+    ALERT_WINDOW, chevaux retenus par la règle et pas encore signalés)."""
     r, rc, sent = db.races, db.racecourses, db.alerts_sent
     lo, hi = now + ALERT_WINDOW[0], now + ALERT_WINDOW[1]
     with engine.connect() as conn:
@@ -98,11 +102,12 @@ def due_alerts(engine: Engine, preds: dict[int, DayPrediction], now: datetime
         done = {(int(x.race_id), int(x.num_pmu)) for x in conn.execute(
             select(sent.c.race_id, sent.c.num_pmu).where(
                 sent.c.rule == RULE_NAME, sent.c.race_id.in_(list(preds))))}
+    online = races_with_internet_odds(engine, [int(x["race_id"]) for x in races])
     alerts = []
     for race in races:
         rid = int(race["race_id"])
         pred = preds[rid]
-        if race["audience"] in REGIONAL or pred.primary != RULE_MODEL or pred.table.empty:
+        if rid not in online or pred.primary != RULE_MODEL or pred.table.empty:
             continue
         picks = rule_picks(pred.table, VALUE_46)
         picks = picks[[(rid, int(n)) not in done for n in picks["num_pmu"]]]
