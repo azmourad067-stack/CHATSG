@@ -1039,3 +1039,47 @@ def run_grand_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, An
         "finalists": finalists,
         "success": any(r["C"].get("roi_ci", (0, 0))[0] > 0 for r in finalists),
     }
+
+
+def run_value46_bet_types(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Règle figée « Valeur 4e-6e » en simple gagnant, en simple placé et les deux, sur les
+    trois périodes de la grande recherche (A, B, C) et au total. Descriptif : la règle
+    figée reste en gagnant ; une version placé serait une nouvelle piste à suivre à part."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import grand_search as gs
+    from horse_intelligence.evaluation.profile_search import prepare
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    pred = _with_market(pred)
+    pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type IN ('SIMPLE_GAGNANT', 'SIMPLE_PLACE')"),
+            conn)
+    if pred.empty:
+        return {"n_races": 0, "results": {}}
+    cuts = gs.cuts_of(pred["race_date"])
+    f = prepare(pred, payouts, model_col)
+    # mêmes chevaux pour les deux paris : courses où gagnant ET placé ont été réglés
+    f = f[f["profit_gagnant"].notna() & f["profit_placé"].notna()]
+    out: dict[str, Any] = {}
+    bets = {}
+    for bet in ("gagnant", "placé"):
+        key = ((4, 6), (9.0, 20.0), None, (10, 14), "espérance ≥ +10 %", bet)
+        bets[bet] = gs.simple_bets(f, model_col, gs.Strategy("simple", bet, key))
+    both = pd.concat([bets["gagnant"], bets["placé"]]).groupby(
+        ["race_id", "race_date"], as_index=False)[["stake", "profit"]].sum()
+    for name, b in (("gagnant", bets["gagnant"]), ("placé", bets["placé"]),
+                    ("gagnant + placé", both)):
+        per = gs.periods(b["race_date"], cuts) if not b.empty else np.array([], int)
+        out[name] = {"A": gs.evaluate(b[per == 0]), "B": gs.evaluate(b[per == 1]),
+                     "C": gs.evaluate(b[per == 2]), "total": gs.evaluate(b)}
+    return {"n_races": int(f["race_id"].nunique()),
+            "cuts": (str(cuts[0]), str(cuts[1])),
+            "period": (str(f["race_date"].min()), str(f["race_date"].max())),
+            "results": out}

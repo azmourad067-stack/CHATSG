@@ -100,3 +100,20 @@ def test_grand_search_end_to_end(repo) -> None:  # type: ignore[no-untyped-def]
     train_and_evaluate(repo.engine, min_train_days=12, test_days=4, calib_days=4, n_members=1)
     rep = run_grand_search(repo.engine)
     assert isinstance(rep["success"], bool)
+
+
+def test_value46_bet_types_end_to_end(repo) -> None:  # type: ignore[no-untyped-def]
+    from tests.synthetic import populate
+
+    from horse_intelligence.services.experiment import run_value46_bet_types
+    from horse_intelligence.services.training import train_and_evaluate
+
+    populate(repo, days=24)
+    train_and_evaluate(repo.engine, min_train_days=12, test_days=4, calib_days=4, n_members=1)
+    rep = run_value46_bet_types(repo.engine)
+    if rep["n_races"]:
+        assert set(rep["results"]) == {"gagnant", "placé", "gagnant + placé"}
+        g, p, both = (rep["results"][k]["total"] for k in ("gagnant", "placé",
+                                                           "gagnant + placé"))
+        if g.get("bets"):
+            assert both["bets"] == g["bets"] + p["bets"]  # mêmes chevaux, deux mises
