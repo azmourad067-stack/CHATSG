@@ -1083,3 +1083,46 @@ def run_value46_bet_types(engine: Engine, model_col: str = INCUMBENT) -> dict[st
             "cuts": (str(cuts[0]), str(cuts[1])),
             "period": (str(f["race_date"].min()), str(f["race_date"].max())),
             "results": out}
+
+
+ANGLE_COLUMNS = ["shoes_d4_first", "shoes_d4", "blinkers_change", "blinkers_on",
+                 "rider_change", "jockey_win_rate_30d", "jockey_runs_30d",
+                 "trainer_win_rate_30d", "trainer_runs_30d", "class_change",
+                 "horse_days_since_db", "mus_last_pos", "apt_course_runs", "apt_course_pct",
+                 "apt_dist_runs", "apt_dist_pct", "apt_pair_runs", "apt_pair_pct",
+                 "speed_red_mean3", "trainer_course_runs", "trainer_course_win_rate",
+                 "dist_change"]
+
+
+def run_angles(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """« Angles » de turfiste en simple gagnant (evaluation/angles.py), sur les prédictions
+    hors échantillon et les variables calculées sans fuite."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import angles
+    from horse_intelligence.evaluation.profile_search import prepare
+    from horse_intelligence.intelligence.feature_engineering import build_dataset, load_raw
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    pred = _with_market(pred)
+    pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
+    if pred.empty:
+        return {"n_races": 0, "success": False, "finalists": []}
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type = 'SIMPLE_GAGNANT'"), conn)
+    frame = build_dataset(load_raw(engine)).frame
+    cols = [c for c in ANGLE_COLUMNS if c in frame.columns]
+    feats = frame[["race_id", "num_pmu", *cols]]
+    del frame
+    f = prepare(pred, payouts, model_col)
+    f = f[f["profit_gagnant"].notna()].merge(feats, on=["race_id", "num_pmu"], how="left")
+    f["_p_model"] = f[model_col]
+    rep = angles.run(f)
+    return {"n_races": int(f["race_id"].nunique()),
+            "period": (str(f["race_date"].min()), str(f["race_date"].max())),
+            "missing_columns": sorted(set(ANGLE_COLUMNS) - set(cols)), **rep}
