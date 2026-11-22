@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 import _bootstrap  # noqa: F401
+from horse_intelligence.alerts import send_alerts, sender_from_env
 from horse_intelligence.monitoring.logging_config import configure_logging
 from horse_intelligence.prediction.forward import precompute_day, record_upcoming
 from horse_intelligence.prediction.race_predictor import load_models
@@ -32,12 +33,19 @@ def main() -> int:
     n = record_upcoming(engine, timedelta(minutes=args.window_minutes), models=models,
                         frames=frames)
     print(f"{n} prédiction(s) enregistrée(s) avant départ")
+    preds = {}
     try:
         today = datetime.now(ZoneInfo("Europe/Paris")).date()
-        k = precompute_day(engine, today, models=models, frames=frames)
-        print(f"{k} course(s) du jour précalculée(s) pour l'interface")
+        preds = precompute_day(engine, today, models=models, frames=frames)
+        print(f"{len(preds)} course(s) du jour précalculée(s) pour l'interface")
     except Exception as exc:  # l'interface recalculera elle-même : jamais bloquant
         print(f"::warning::précalcul du jour en échec : {exc}")
+    sender = sender_from_env()
+    if sender is not None and preds:
+        try:
+            print(f"{send_alerts(engine, preds, sender)} alerte(s) SMS envoyée(s)")
+        except Exception as exc:  # une alerte manquée ne doit pas arrêter la collecte
+            print(f"::warning::alertes SMS en échec : {exc}")
     return 0
 
 

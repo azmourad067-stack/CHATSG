@@ -220,8 +220,8 @@ def test_precomputed_day_predictions_round_trip(trained) -> None:  # type: ignor
     ids = [int(x) for x in repo.races_on(day)["race_id"]]
     before_start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
     # plus aucune course à courir : rien n'est calculé
-    assert precompute_day(repo.engine, day, now=datetime(2100, 1, 1, tzinfo=UTC)) == 0
-    assert precompute_day(repo.engine, day, now=before_start) == len(ids)
+    assert precompute_day(repo.engine, day, now=datetime(2100, 1, 1, tzinfo=UTC)) == {}
+    assert len(precompute_day(repo.engine, day, now=before_start)) == len(ids)
     key = day_store.data_key(repo.engine)
     stored = day_store.load(repo.engine, ids, key)
     assert stored is not None and set(stored) == set(ids)
@@ -238,5 +238,5 @@ def test_precomputed_day_predictions_round_trip(trained) -> None:  # type: ignor
     assert day_store.load(repo.engine, ids, key + "x") is None
     assert day_store.load(repo.engine, [*ids, 999999], key) is None
     # nouveau calcul : remplace, ne duplique pas
-    assert precompute_day(repo.engine, day, now=before_start) == len(ids)
+    assert len(precompute_day(repo.engine, day, now=before_start)) == len(ids)
     assert day_store.load(repo.engine, ids, key) is not None

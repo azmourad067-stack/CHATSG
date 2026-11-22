@@ -85,9 +85,9 @@ def _f(v: object) -> float | None:
 
 def precompute_day(engine: Engine, day: date, now: datetime | None = None,
                    models: dict[str, Any] | None = None,
-                   frames: dict[object, pd.DataFrame] | None = None) -> int:
+                   frames: dict[object, pd.DataFrame] | None = None) -> dict[int, Any]:
     """Calcule et range les probabilités de toutes les courses de `day` pour l'interface,
-    s'il reste au moins une course à courir. Renvoie le nombre de courses rangées."""
+    s'il reste au moins une course à courir. Renvoie les prédictions (vide sinon)."""
     from horse_intelligence.prediction import day_store
     from horse_intelligence.prediction.race_predictor import predict_day
 
@@ -98,10 +98,10 @@ def precompute_day(engine: Engine, day: date, now: datetime | None = None,
                              .where(r.c.race_date == day)).all()
     if not races or not any(x.scheduled_start_utc is not None
                             and _utc(x.scheduled_start_utc) > now for x in races):
-        return 0
+        return {}
     models = models if models is not None else load_models(engine)
     if not models:
-        return 0
+        return {}
     # clé lue AVANT le calcul : une donnée arrivée pendant le calcul la rend périmée
     key = day_store.data_key(engine)
     frames = frames if frames is not None else {}
@@ -109,8 +109,8 @@ def precompute_day(engine: Engine, day: date, now: datetime | None = None,
         frames[day] = build_frame(engine, day, models_use_source_aggregates(models))
     ids = [int(x.race_id) for x in races]
     preds = predict_day(engine, ids, frames[day], models)
-    return day_store.store(engine, preds, {int(x.race_id): x.race_date for x in races}, key,
-                           now)
+    day_store.store(engine, preds, {int(x.race_id): x.race_date for x in races}, key, now)
+    return preds
 
 
 def _utc(value: datetime) -> datetime:
