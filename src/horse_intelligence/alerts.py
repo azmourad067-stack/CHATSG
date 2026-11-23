@@ -2,9 +2,10 @@
 
 À chaque collecte (toutes les 15 min), les courses ouvertes aux paris en ligne (cotes
 Internet publiées, toutes réunions) qui partent dans ALERT_WINDOW minutes sont examinées
-avec la règle figée « Valeur 4e-6e » : chaque cheval retenu fait l'objet d'UN seul SMS,
-envoyé environ 10 à 25 minutes avant le départ. Les choix dépendent des cotes du moment :
-ils peuvent encore changer jusqu'au départ.
+avec la règle figée « Valeur 4e-6e », dans sa variante « tôt » (VALUE_46_EARLY, choisie par
+l'utilisateur le 23/11/2026 à la place de l'alerte 10 à 25 min avant) : chaque cheval
+retenu fait l'objet d'UN seul SMS, envoyé 45 à 60 minutes avant le départ. Au PMU, le gain
+dépend du rapport final, pas de la cote au moment du pari.
 
 Identifiants Free Mobile : secrets GitHub FREE_MOBILE_USER et FREE_MOBILE_KEY (jamais dans
 le code). Sans eux, rien n'est envoyé.
@@ -25,15 +26,16 @@ from sqlalchemy import Engine, insert, select
 
 from horse_intelligence.data.storage import database as db
 from horse_intelligence.evaluation.forward_rules import (
-    VALUE_46,
+    VALUE_46_EARLY,
     races_with_internet_odds,
     rule_picks,
 )
 from horse_intelligence.prediction.race_predictor import DayPrediction
 
 FREE_MOBILE_URL = "https://smsapi.free-mobile.fr/sendmsg"
-ALERT_WINDOW = (timedelta(minutes=8), timedelta(minutes=25))
-RULE_NAME = "valeur_4e_6e"
+ALERT_WINDOW = (timedelta(minutes=45), timedelta(minutes=60))
+RULE = VALUE_46_EARLY
+RULE_NAME = "valeur_4e_6e_tot"
 RULE_MODEL = "lgbm_market"
 PARIS = ZoneInfo("Europe/Paris")
 FREE_MOBILE_ERRORS = {400: "paramètre manquant", 402: "trop de SMS envoyés en peu de temps",
@@ -76,7 +78,7 @@ def _paris(ts: datetime) -> str:
 
 def format_alert(race: dict[str, Any], picks: pd.DataFrame, names: dict[int, str]) -> str:
     start = race["scheduled_start_utc"]
-    lines = [f"Pari Valeur 4e-6e - R{race['reunion_num']}C{race['course_num']} "
+    lines = [f"Pari Valeur 4e-6e (1 h avant) - R{race['reunion_num']}C{race['course_num']} "
              f"{race['racecourse'] or ''} départ {_paris(start)}"]
     for p in picks.to_dict("records"):
         name = names.get(int(p["num_pmu"]), "")
@@ -109,7 +111,7 @@ def due_alerts(engine: Engine, preds: dict[int, DayPrediction], now: datetime
         pred = preds[rid]
         if rid not in online or pred.primary != RULE_MODEL or pred.table.empty:
             continue
-        picks = rule_picks(pred.table, VALUE_46)
+        picks = rule_picks(pred.table, RULE)
         picks = picks[[(rid, int(n)) not in done for n in picks["num_pmu"]]]
         if picks.empty:
             continue

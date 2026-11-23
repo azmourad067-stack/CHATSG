@@ -2,9 +2,11 @@
 # Nécessite le secret de dépôt DATABASE_URL (PostgreSQL persistant). Sans lui, rien n'est fait.
 # GitHub déclenche très mal les planifications de ce dépôt (des journées entières sans aucune
 # exécution) : la collecte est donc une chaîne permanente. Chaque exécution boucle ~5 h 40
-# (collecte toutes les 15 min entre 9 h 30 et 21 h 45 UTC, simple attente la nuit), puis se
+# (collecte toutes les 15 min entre 8 h 45 et 21 h 45 UTC, simple attente la nuit), puis se
 # relance elle-même (workflow_dispatch). Les planifications horaires ne servent qu'à reprendre
 # la chaîne si elle se rompt ; une exécution surnuméraire attend, puis est remplacée.
+# Fenêtre de 75 min : cotes et prédictions dès 1 h 15 avant le départ, pour l'alerte SMS
+# envoyée 45 à 60 min avant (règle VALUE_46_EARLY, 23/11/2026).
 # Coût : une machine en continu, gratuit en dépôt public (pas en dépôt privé).
 name: collect
 
@@ -59,9 +61,9 @@ jobs:
           while [ "$(date +%s)" -lt "$end" ]; do
             tick=$(date +%s)
             hm=$(date -u +%H%M)
-            if [ "$hm" -ge 0930 ] && [ "$hm" -lt 2145 ]; then
-              python scripts/refresh_data.py --countries FRA --window-minutes 45 || echo "::warning::collecte en échec"
-              python scripts/predict_upcoming.py --window-minutes 45 || echo "::warning::prédictions en échec"
+            if [ "$hm" -ge 0845 ] && [ "$hm" -lt 2145 ]; then
+              python scripts/refresh_data.py --countries FRA --window-minutes 75 || echo "::warning::collecte en échec"
+              python scripts/predict_upcoming.py --window-minutes 75 || echo "::warning::prédictions en échec"
             fi
             next=$(( tick + 900 ))
             [ "$next" -ge "$end" ] && break

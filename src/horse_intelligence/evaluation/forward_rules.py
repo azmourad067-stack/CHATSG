@@ -19,6 +19,13 @@ bilan est seulement intermédiaire.
 Correction du 22/11/2026, avant tout résultat de la période de suivi : l'application et le
 bilan ne gardaient que les réunions nationales, alors que la règle a été trouvée sur toutes
 les réunions ; ils suivent désormais la règle telle qu'elle a été testée.
+
+Variante « tôt », figée le 23/11/2026 à la demande de l'utilisateur (VALUE_46_EARLY) :
+même règle, mais décidée sur la dernière prédiction faite 45 à 60 min avant le départ
+(et non la toute dernière). Sur les prédictions enregistrées du 01/11 au 23/11/2026,
+comparaison faite APRÈS coup : 20 paris, +134 % (IC [−17 % ; +308 %]) contre 37 paris,
+−40 % pour la décision 8 à 25 min avant. Non significatif ; suivie à part. C'est elle
+que suivent les alertes SMS depuis le 23/11/2026.
 """
 
 from __future__ import annotations
@@ -44,6 +51,9 @@ class ValueRule:
     min_ev: float
     payout_factor: float = 0.90
     bet_type: str = "SIMPLE_GAGNANT"
+    # décision prise sur la dernière prédiction faite entre lead[0] (exclu) et lead[1]
+    # (inclus) minutes avant le départ ; None : la toute dernière avant le départ
+    lead_minutes: tuple[int, int] | None = None
 
     @property
     def first_day(self) -> date:
@@ -52,6 +62,9 @@ class ValueRule:
 
 VALUE_46 = ValueRule("Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, gagnant",
                      date(2026, 11, 21), (4, 6), (9.0, 20.0), (10, 14), 0.10)
+VALUE_46_EARLY = ValueRule(
+    "Valeur 4e-6e, décision 45 à 60 min avant le départ, gagnant", date(2026, 11, 23),
+    (4, 6), (9.0, 20.0), (10, 14), 0.10, lead_minutes=(45, 60))
 
 
 def rule_picks(table: pd.DataFrame, rule: ValueRule = VALUE_46) -> pd.DataFrame:
@@ -69,9 +82,11 @@ def rule_picks(table: pd.DataFrame, rule: ValueRule = VALUE_46) -> pd.DataFrame:
              & (t["mkt_odds"] <= rule.odds[1]) & (t["ev"] >= rule.min_ev)]
 
 
-def _last_predictions(engine: Engine, first_day: date) -> pd.DataFrame:
+def _last_predictions(engine: Engine, first_day: date,
+                      lead_minutes: tuple[int, int] | None = None) -> pd.DataFrame:
     """Partants de la DERNIÈRE prédiction enregistrée avant le départ de chaque course
-    courue à partir de `first_day`."""
+    courue à partir de `first_day` (avec `lead_minutes` : la dernière faite entre
+    lead[0] exclu et lead[1] inclus minutes avant le départ)."""
     query = text("""
         SELECT p.prediction_id, p.race_id, p.decision_time, r.race_date, r.audience,
                r.label, r.conditions_text, r.discipline, r.scheduled_start_utc
@@ -88,7 +103,11 @@ def _last_predictions(engine: Engine, first_day: date) -> pd.DataFrame:
             "WHERE r.race_date >= :first"), conn, params={"first": first_day})
     dt = pd.to_datetime(preds["decision_time"], utc=True)
     start = pd.to_datetime(preds["scheduled_start_utc"], utc=True)
-    preds = preds[dt < start].assign(_dt=dt[dt < start])
+    keep = dt < start
+    if lead_minutes is not None:
+        lead = (start - dt).dt.total_seconds() / 60
+        keep = keep & (lead > lead_minutes[0]) & (lead <= lead_minutes[1])
+    preds = preds[keep].assign(_dt=dt[keep])
     last = preds.sort_values("_dt").groupby("race_id").tail(1).drop(columns="_dt")
     last = last.assign(race_date=pd.to_datetime(last["race_date"]).dt.date)
     return last.merge(entries, on="prediction_id")
@@ -98,7 +117,7 @@ def forward_bets(engine: Engine, rule: ValueRule = VALUE_46,
                  national_only: bool = False) -> pd.DataFrame:
     """Paris de la règle sur les prédictions enregistrées avant le départ (dernière
     prédiction de chaque course), courses réglées seulement."""
-    entries = _last_predictions(engine, rule.first_day)
+    entries = _last_predictions(engine, rule.first_day, rule.lead_minutes)
     with engine.connect() as conn:
         payouts = pd.read_sql(text(
             "SELECT race_id, combination, payout_per_eur FROM payouts "
