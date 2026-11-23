@@ -1,6 +1,7 @@
 """Sélection du jour : deux règles NON validées, appliquées telles qu'elles ont été définies,
-et un signal d'information (« déferré des 4 pour la 1re fois », prediction/signals.py,
-ajouté à la demande de l'utilisateur le 23/11/2026 : réel mais non rentable).
+et la règle « déferré des 4 pour la 1re fois, autostart, place 4 à 6, cote ≤ 9 » figée le
+23/11/2026 (evaluation/forward_rules.D4_AUTOSTART), qui remplace l'onglet d'information
+« déferré des 4 (1re fois) » du même jour, à la demande de l'utilisateur.
 
 1. « 3e du modèle, simple gagnant, trot G » (ci-dessous) ; toutes réunions ouvertes aux
    paris en ligne depuis le 23/11/2026, à la demande de l'utilisateur (test du même jour :
@@ -36,9 +37,13 @@ from sqlalchemy import select
 
 from horse_intelligence.data.storage import database as db
 from horse_intelligence.evaluation.forward_rules import (
+    D4_AUTOSTART,
     VALUE_46,
+    d4_rule_match,
+    is_autostart,
     races_with_internet_odds,
     rule_picks,
+    start_place,
 )
 from horse_intelligence.evaluation.segment_analysis import race_group
 from horse_intelligence.frontend.components.cards import notice
@@ -159,7 +164,7 @@ def render() -> None:
     all_races = _races_on(day)
     data = _day_data(day, all_races)
     tab_g, tab_value, tab_d4 = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)",
-                                        "Déferré des 4 (1re fois)"])
+                                        "Déferré 4 autostart (place 4-6)"])
     with tab_g:
         _render_trot_g(all_races, data)
     with tab_value:
@@ -344,50 +349,95 @@ def _render_value(races: pd.DataFrame, data: DayData) -> None:
 
 
 def _render_d4(races: pd.DataFrame, data: DayData) -> None:
-    st.info(
-        "Signal d'information, PAS une règle de pari : trotteurs déferrés des 4 pieds alors "
-        "qu'ils ne l'étaient pas à leur dernière course. Sur deux ans, les jouer tous en "
-        "simple gagnant a donné +0,2 % (16 352 paris), bien mieux que l'ensemble des "
-        "partants (−21,3 %) : le marché sous-estime un peu ce changement. Mais ce n'est pas "
-        "rentable, et les six derniers mois ont donné −11,7 %. À utiliser comme un élément "
-        "d'analyse parmi d'autres, pas comme un pari automatique.")
-    if races.empty or not data.d4_first:
-        notice("Aucun trotteur déferré des 4 pour la 1re fois ce jour-là (pour l'instant).")
+    rule = D4_AUTOSTART
+    st.warning(
+        "Règle NON validée, figée le 23/11/2026 pour être jugée sur les courses à venir : "
+        "« trotteur déferré des 4 pour la 1re fois, départ autostart, place 4 à 6 derrière "
+        "l'autostart, cote jusqu'à 9, simple gagnant ». Sur deux ans de tests : +16,4 %, puis "
+        "+26,2 %, puis +17,7 % sur les six derniers mois, environ 1 gagnant sur 3 et 250 "
+        "paris par an ; mais marge d'erreur de −27 % à +66 % : c'est peut-être de la chance "
+        "(60 combinaisons essayées). À suivre de façon fictive, ou avec de très petites "
+        "mises fixes.")
+    if races.empty:
+        notice("Aucune course ce jour-là.")
         return
     info = races.set_index("race_id")
+    now = datetime.now(UTC)
     rows = []
     for rid, num in sorted(data.d4_first):
+        if rid not in info.index:
+            continue
         r = info.loc[rid]
+        if not is_autostart(r.get("conditions_text")):
+            continue
+        e = data.runners(rid)
+        hit = e[e["num_pmu"] == num] if not e.empty else e
+        draw = hit["draw"].iloc[0] if not hit.empty and "draw" in hit else None
+        place = start_place(draw, num)
+        if not rule.places[0] <= place <= rule.places[1]:
+            continue
         pred = data.pred(rid)
-        row: dict[str, Any] = {}
-        if pred is not None and not pred.table.empty:
+        odds, rank, p_win = None, "—", "—"
+        if pred is not None and pred.primary == RULE_MODEL and not pred.table.empty:
             t = pred.table.sort_values("p_win", ascending=False, kind="stable")
             t = t.reset_index(drop=True)
-            hit = t[t["num_pmu"] == num]
-            if not hit.empty:
-                h = hit.iloc[0]
-                row = {"Rang modèle": str(int(hit.index[0]) + 1),
-                       "P(victoire)": f"{100 * h['p_win']:.1f} %",
-                       "Cote réf.": "—" if pd.isna(h["mkt_odds"]) else f"{h['mkt_odds']:.1f}"}
+            h = t[t["num_pmu"] == num]
+            if not h.empty:
+                odds = h["mkt_odds"].iloc[0]
+                rank = str(int(h.index[0]) + 1)
+                p_win = f"{100 * h['p_win'].iloc[0]:.1f} %"
+        online = rid in data.online
+        start = r["scheduled_start_utc"]
+        start_ts = None if start is None or pd.isna(start) else pd.Timestamp(start)
+        if start_ts is not None and start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize(UTC)
+        finished = bool(r["result_final"])
+        if finished:
+            state = "terminée"
+        elif odds is None or pd.isna(odds):
+            state = "cotes pas encore publiées : revenir avant le départ"
+        elif not online:
+            state = "pas de pari en ligne (aucune cote Internet)"
+        elif d4_rule_match(place, odds, True, True, rule):
+            state = "RETENU pour l'instant : à jouer en simple gagnant"
+        else:
+            state = f"cote {float(odds):.1f} au-dessus de {rule.odds[1]:g} : non retenu"
         finish = _finish({"race_id": rid, "result_final": r["result_final"]}, num)
         rows.append({
-            "_start": str(r["scheduled_start_utc"]),
-            "Départ": _paris_time(r["scheduled_start_utc"]),
+            "_start": str(start),
+            "Départ": _paris_time(start),
+            "Consulter vers": "—" if start_ts is None
+            else _paris_time(start_ts - CHECK_BEFORE),
             "Course": f"R{r['reunion_num']}C{r['course_num']}",
             "Hippodrome": r["racecourse"] or "?",
             "Réunion": AUDIENCE_NAMES.get(str(r.get("audience")), "nationale"),
-            "N°": num, "Cheval": data.names(rid).get(
-                _horse_id(data, rid, num), "?"),
-            "Rang modèle": row.get("Rang modèle", "—"),
-            "P(victoire)": row.get("P(victoire)", "—"),
-            "Cote réf.": row.get("Cote réf.", "cotes pas encore publiées"),
-            "Pari en ligne": "oui" if rid in data.online else "pas de cote Internet",
-            "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
+            "N°": num, "Cheval": data.names(rid).get(_horse_id(data, rid, num), "?"),
+            "Place départ": str(int(place)),
+            "Rang modèle": rank, "P(victoire)": p_win,
+            "Cote réf.": "—" if odds is None or pd.isna(odds) else f"{float(odds):.1f}",
+            "État": state,
+            "Arrivée": "—" if finish is None or pd.isna(finish) else str(int(finish)),
+            "_upcoming": start_ts is not None and start_ts > now and not finished,
         })
-    table = pd.DataFrame(rows).sort_values(["_start", "Course", "N°"]).drop(columns="_start")
-    st.dataframe(table, hide_index=True, width="stretch")
-    st.caption(f"{len(rows)} trotteur(s) concerné(s). Changement de ferrure constaté entre "
-               "la dernière course connue du cheval et la déclaration du jour.")
+    if not rows:
+        notice("Aucun trotteur déferré des 4 pour la 1re fois en place 4 à 6 d'un départ "
+               "autostart ce jour-là (pour l'instant).")
+        return
+    table = pd.DataFrame(rows).sort_values(["_start", "Course", "N°"])
+    upcoming = table[table["_upcoming"]]
+    if not upcoming.empty:
+        nxt = upcoming.iloc[0]
+        st.info(f"Prochain cheval à surveiller : n°{nxt['N°']} {nxt['Cheval']}, "
+                f"{nxt['Course']} ({nxt['Hippodrome']}) à {nxt['Départ']}. Rafraîchissez "
+                f"la page vers {nxt['Consulter vers']} : il est retenu si sa cote est "
+                f"jusqu'à {rule.odds[1]:g}.")
+    st.dataframe(table.drop(columns=["_start", "_upcoming"]), hide_index=True,
+                 width="stretch")
+    st.caption("Candidats : trotteurs déferrés des 4 pieds alors qu'ils ne l'étaient pas à "
+               "leur dernière course, partant en place 4 à 6 d'un départ autostart (numéro "
+               "de corde publié, sinon numéro PMU). Le cheval est retenu si sa cote de "
+               "référence est au plus 9 et que le pari en ligne est ouvert ; la cote bouge "
+               "jusqu'au départ : décidez à l'heure « Consulter vers », sans revenir dessus.")
 
 
 def _horse_id(data: DayData, race_id: int, num: int) -> Any:

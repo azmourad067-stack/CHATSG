@@ -484,7 +484,7 @@ class Repository:
         if not race_ids:
             return pd.DataFrame()
         e, h = db.race_entries, db.horses
-        df = self._df(select(e.c.race_id, e.c.num_pmu, e.c.horse_id, e.c.status,
+        df = self._df(select(e.c.race_id, e.c.num_pmu, e.c.horse_id, e.c.status, e.c.draw,
                              e.c.observed_at, h.c.display_name.label("horse"))
                       .join(h, h.c.horse_id == e.c.horse_id)
                       .where(e.c.race_id.in_([int(r) for r in race_ids])))
