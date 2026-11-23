@@ -349,8 +349,7 @@ def _render_d4(races: pd.DataFrame, data: DayData) -> None:
         return
     info = races.set_index("race_id")
     rows = []
-    for rid, num in sorted(data.d4_first, key=lambda k: (
-            pd.Timestamp(info.loc[k[0], "scheduled_start_utc"]), k[1])):
+    for rid, num in sorted(data.d4_first):
         r = info.loc[rid]
         pred = data.pred(rid)
         row: dict[str, Any] = {}
@@ -365,6 +364,7 @@ def _render_d4(races: pd.DataFrame, data: DayData) -> None:
                        "Cote réf.": "—" if pd.isna(h["mkt_odds"]) else f"{h['mkt_odds']:.1f}"}
         finish = _finish({"race_id": rid, "result_final": r["result_final"]}, num)
         rows.append({
+            "_start": str(r["scheduled_start_utc"]),
             "Départ": _paris_time(r["scheduled_start_utc"]),
             "Course": f"R{r['reunion_num']}C{r['course_num']}",
             "Hippodrome": r["racecourse"] or "?",
@@ -377,7 +377,8 @@ def _render_d4(races: pd.DataFrame, data: DayData) -> None:
             "Pari en ligne": "oui" if rid in data.online else "pas de cote Internet",
             "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
         })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    table = pd.DataFrame(rows).sort_values(["_start", "Course", "N°"]).drop(columns="_start")
+    st.dataframe(table, hide_index=True, width="stretch")
     st.caption(f"{len(rows)} trotteur(s) concerné(s). Changement de ferrure constaté entre "
                "la dernière course connue du cheval et la déclaration du jour.")
 
