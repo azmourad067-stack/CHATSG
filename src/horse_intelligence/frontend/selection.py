@@ -1,4 +1,6 @@
-"""Sélection du jour : deux règles NON validées, appliquées telles qu'elles ont été définies.
+"""Sélection du jour : deux règles NON validées, appliquées telles qu'elles ont été définies,
+et un signal d'information (« déferré des 4 pour la 1re fois », prediction/signals.py,
+ajouté à la demande de l'utilisateur le 23/11/2026 : réel mais non rentable).
 
 1. « 3e du modèle, simple gagnant, trot G » (ci-dessous).
 2. « Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, espérance ≥ +10 %, gagnant »,
@@ -40,6 +42,7 @@ from horse_intelligence.evaluation.segment_analysis import race_group
 from horse_intelligence.frontend.components.cards import notice
 from horse_intelligence.frontend.race_analysis import day_predictions
 from horse_intelligence.frontend.state import get_context
+from horse_intelligence.prediction.signals import first_time_d4
 
 PARIS = ZoneInfo("Europe/Paris")
 RULE_GROUP = "Trot G"
@@ -108,6 +111,7 @@ class DayData:
     preds: dict[int, Any]
     entries: dict[int, pd.DataFrame]
     online: set[int] = field(default_factory=set)  # cotes Internet publiées
+    d4_first: set[tuple[int, int]] = field(default_factory=set)  # déferrés 4 1re fois
 
     def pred(self, race_id: int) -> Any:
         return self.preds.get(race_id)
@@ -129,9 +133,13 @@ def _day_data(day: date, races: pd.DataFrame) -> DayData:
         repo = get_context().repo
         entries = repo.entries_for_races(ids)
         online = races_with_internet_odds(repo.engine, ids)
+        try:  # signal d'information : ne doit jamais empêcher la page de s'afficher
+            d4 = first_time_d4(repo.engine, ids, day)
+        except Exception:
+            d4 = set()
     by_race = {int(cast(int, rid)): g.reset_index(drop=True)
                for rid, g in entries.groupby("race_id")} if not entries.empty else {}
-    return DayData(preds, by_race, online)
+    return DayData(preds, by_race, online, d4)
 
 
 def render() -> None:
@@ -150,11 +158,14 @@ def render() -> None:
     national = national_races(all_races)
     n_regional = len(all_races) - len(national)
     data = _day_data(day, all_races)
-    tab_g, tab_value = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)"])
+    tab_g, tab_value, tab_d4 = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)",
+                                        "Déferré des 4 (1re fois)"])
     with tab_g:
         _render_trot_g(national, n_regional, data)
     with tab_value:
         _render_value(all_races, data)
+    with tab_d4:
+        _render_d4(all_races, data)
     st.caption(
         "Heures de Paris. Le classement tient compte des cotes, il peut changer jusqu'au "
         "départ : consultez la page 10 à 20 minutes avant la course (les données sont "
@@ -323,3 +334,55 @@ def _render_value(races: pd.DataFrame, data: DayData) -> None:
     st.caption(" ".join(notes) + " Une même course peut donner plusieurs chevaux (1 € "
                "chacun dans les tests). L'espérance est calculée sur la cote de référence "
                "× 0,90 : ce n'est pas un gain garanti.")
+
+
+def _render_d4(races: pd.DataFrame, data: DayData) -> None:
+    st.info(
+        "Signal d'information, PAS une règle de pari : trotteurs déferrés des 4 pieds alors "
+        "qu'ils ne l'étaient pas à leur dernière course. Sur deux ans, les jouer tous en "
+        "simple gagnant a donné +0,2 % (16 352 paris), bien mieux que l'ensemble des "
+        "partants (−21,3 %) : le marché sous-estime un peu ce changement. Mais ce n'est pas "
+        "rentable, et les six derniers mois ont donné −11,7 %. À utiliser comme un élément "
+        "d'analyse parmi d'autres, pas comme un pari automatique.")
+    if races.empty or not data.d4_first:
+        notice("Aucun trotteur déferré des 4 pour la 1re fois ce jour-là (pour l'instant).")
+        return
+    info = races.set_index("race_id")
+    rows = []
+    for rid, num in sorted(data.d4_first, key=lambda k: (
+            pd.Timestamp(info.loc[k[0], "scheduled_start_utc"]), k[1])):
+        r = info.loc[rid]
+        pred = data.pred(rid)
+        row: dict[str, Any] = {}
+        if pred is not None and not pred.table.empty:
+            t = pred.table.sort_values("p_win", ascending=False, kind="stable")
+            t = t.reset_index(drop=True)
+            hit = t[t["num_pmu"] == num]
+            if not hit.empty:
+                h = hit.iloc[0]
+                row = {"Rang modèle": str(int(hit.index[0]) + 1),
+                       "P(victoire)": f"{100 * h['p_win']:.1f} %",
+                       "Cote réf.": "—" if pd.isna(h["mkt_odds"]) else f"{h['mkt_odds']:.1f}"}
+        finish = _finish({"race_id": rid, "result_final": r["result_final"]}, num)
+        rows.append({
+            "Départ": _paris_time(r["scheduled_start_utc"]),
+            "Course": f"R{r['reunion_num']}C{r['course_num']}",
+            "Hippodrome": r["racecourse"] or "?",
+            "Réunion": AUDIENCE_NAMES.get(str(r.get("audience")), "nationale"),
+            "N°": num, "Cheval": data.names(rid).get(
+                _horse_id(data, rid, num), "?"),
+            "Rang modèle": row.get("Rang modèle", "—"),
+            "P(victoire)": row.get("P(victoire)", "—"),
+            "Cote réf.": row.get("Cote réf.", "cotes pas encore publiées"),
+            "Pari en ligne": "oui" if rid in data.online else "pas de cote Internet",
+            "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption(f"{len(rows)} trotteur(s) concerné(s). Changement de ferrure constaté entre "
+               "la dernière course connue du cheval et la déclaration du jour.")
+
+
+def _horse_id(data: DayData, race_id: int, num: int) -> Any:
+    e = data.runners(race_id)
+    hit = e[e["num_pmu"] == num] if not e.empty else e
+    return None if hit.empty else hit["horse_id"].iloc[0]
