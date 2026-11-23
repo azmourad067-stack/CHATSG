@@ -169,6 +169,90 @@ def forward_trot_g(engine: Engine, first_day: date = VALUE_46.first_day) -> pd.D
                                        "profit"])
 
 
+@dataclass(frozen=True)
+class D4StartRule:
+    """« Déferré des 4 pour la 1re fois, autostart, place 4 à 6, cote ≤ 9 » (trot), figée le
+    23/11/2026 à la demande de l'utilisateur. Seule finaliste de l'expérience d4_draw
+    positive sur les trois périodes : +16,4 % (A, 222 paris), +26,2 % (B, 136), +17,7 % (C,
+    123 ; IC corrigé [−27 % ; +66 %]) ; NON significative (60 combinaisons essayées).
+    Place = numéro de corde publié, sinon numéro PMU (place derrière l'autostart)."""
+
+    name: str
+    frozen_on: date
+    places: tuple[int, int]
+    odds: tuple[float, float]       # cote de référence > odds[0] et ≤ odds[1]
+    bet_type: str = "SIMPLE_GAGNANT"
+
+    @property
+    def first_day(self) -> date:
+        return date.fromordinal(self.frozen_on.toordinal() + 1)
+
+
+D4_AUTOSTART = D4StartRule("Déferré 4 (1re fois), autostart, place 4 à 6, cote ≤ 9, gagnant",
+                           date(2026, 11, 23), (4, 6), (1.0, 9.0))
+
+
+def is_autostart(conditions_text: object) -> bool:
+    """Même définition que load_raw : « autostart » dans les conditions de la course."""
+    return "autostart" in str(conditions_text or "").lower()
+
+
+def start_place(draw: object, num_pmu: object) -> float:
+    """Place au départ : numéro de corde publié, sinon numéro PMU."""
+    d, n = pd.to_numeric(pd.Series([draw, num_pmu]), errors="coerce").tolist()
+    return float(d) if pd.notna(d) else float(n)
+
+
+def d4_rule_match(place: float, mkt_odds: float | None, autostart: bool, d4_first: bool,
+                  rule: D4StartRule = D4_AUTOSTART) -> bool:
+    if not (d4_first and autostart) or mkt_odds is None or pd.isna(mkt_odds):
+        return False
+    return (rule.places[0] <= place <= rule.places[1]
+            and rule.odds[0] < float(mkt_odds) <= rule.odds[1])
+
+
+def forward_d4(engine: Engine, rule: D4StartRule = D4_AUTOSTART) -> pd.DataFrame:
+    """Paris de la règle déferré 4 / autostart sur les prédictions d'avant-course
+    (dernière de chaque course), courses réglées seulement (rapport Internet)."""
+    from horse_intelligence.prediction.signals import first_time_d4
+
+    entries = _last_predictions(engine, rule.first_day)
+    if entries.empty:
+        return pd.DataFrame(columns=["race_id", "race_date", "num_pmu", "mkt_odds", "profit"])
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, combination, payout_per_eur FROM payouts WHERE pool = "
+            "'INTERNET' AND bet_type = 'SIMPLE_GAGNANT' AND payout_per_eur IS NOT NULL"), conn)
+        draws = pd.read_sql(text(
+            "SELECT race_id, num_pmu, draw, observed_at FROM race_entries WHERE race_id IN "
+            "(SELECT race_id FROM races WHERE race_date >= :first)"), conn,
+            params={"first": rule.first_day})
+    draws = draws.sort_values("observed_at").drop_duplicates(["race_id", "num_pmu"],
+                                                             keep="last")
+    draw_of = {(int(r), int(n)): d for r, n, d in zip(draws["race_id"], draws["num_pmu"],
+                                                      draws["draw"], strict=True)}
+    d4: set[tuple[int, int]] = set()
+    for day, g in entries.groupby("race_date"):
+        d4 |= first_time_d4(engine, sorted({int(x) for x in g["race_id"]}),
+                            cast(date, day))
+    settled = set(payouts["race_id"].astype(int))
+    paid = {(int(r), str(c)): float(v) for r, c, v in zip(
+        payouts["race_id"], payouts["combination"], payouts["payout_per_eur"], strict=True)}
+    rows = []
+    for e in entries.to_dict("records"):
+        rid, num = int(e["race_id"]), int(e["num_pmu"])
+        if rid not in settled:
+            continue
+        place = start_place(draw_of.get((rid, num)), num)
+        if d4_rule_match(place, e["mkt_odds"], is_autostart(e["conditions_text"]),
+                         (rid, num) in d4, rule):
+            rows.append({"race_id": rid, "race_date": e["race_date"], "num_pmu": num,
+                         "mkt_odds": e["mkt_odds"],
+                         "profit": paid.get((rid, str(num)), 0.0) - 1.0})
+    return pd.DataFrame(rows, columns=["race_id", "race_date", "num_pmu", "mkt_odds",
+                                       "profit"])
+
+
 def verdict(bets: pd.DataFrame, n_boot: int = 4000, seed: int = 0) -> dict[str, Any]:
     if bets.empty:
         return {"bets": 0, "status": "aucun pari réglé"}
