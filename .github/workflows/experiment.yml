@@ -22,6 +22,7 @@
 #   profile_app : temps de calcul de la page Sélection du jour (diagnostic)
 #   value46 : règle Valeur 4e-6e en gagnant, en placé et les deux (descriptif)
 #   angles : signaux de turfiste en simple gagnant (déferré, œillères, forme, catégorie…)
+#   d4_draw : déferré des 4 pour la 1re fois × numéro de corde, en simple gagnant
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -32,7 +33,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles, d4_draw]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -141,6 +142,9 @@ jobs:
       - name: Angles de turfiste en simple gagnant
         if: env.EXPERIMENT == 'angles'
         run: python scripts/experiment_angles.py
+      - name: Déferré des 4 (1re fois) × numéro de corde
+        if: env.EXPERIMENT == 'd4_draw'
+        run: python scripts/experiment_d4_draw.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py

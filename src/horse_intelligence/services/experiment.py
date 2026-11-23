@@ -1094,12 +1094,12 @@ ANGLE_COLUMNS = ["shoes_d4_first", "shoes_d4", "blinkers_change", "blinkers_on",
                  "dist_change"]
 
 
-def run_angles(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
-    """« Angles » de turfiste en simple gagnant (evaluation/angles.py), sur les prédictions
-    hors échantillon et les variables calculées sans fuite."""
+def _features_frame(engine: Engine, model_col: str, columns: list[str]
+                    ) -> tuple[pd.DataFrame, list[str]]:
+    """Prédictions hors échantillon (marché complet) réglées en simple gagnant, avec les
+    variables demandées (calculées sans fuite). Renvoie aussi les variables absentes."""
     from sqlalchemy import text
 
-    from horse_intelligence.evaluation import angles
     from horse_intelligence.evaluation.profile_search import prepare
     from horse_intelligence.intelligence.feature_engineering import build_dataset, load_raw
     from horse_intelligence.services.training import load_oos_predictions
@@ -1110,19 +1110,45 @@ def run_angles(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
     pred = _with_market(pred)
     pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
     if pred.empty:
-        return {"n_races": 0, "success": False, "finalists": []}
+        return pred, columns
     with engine.connect() as conn:
         payouts = pd.read_sql(text(
             "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
             "WHERE pool = 'INTERNET' AND bet_type = 'SIMPLE_GAGNANT'"), conn)
     frame = build_dataset(load_raw(engine)).frame
-    cols = [c for c in ANGLE_COLUMNS if c in frame.columns]
+    cols = [c for c in columns if c in frame.columns and c not in ("race_id", "num_pmu")]
     feats = frame[["race_id", "num_pmu", *cols]]
     del frame
     f = prepare(pred, payouts, model_col)
     f = f[f["profit_gagnant"].notna()].merge(feats, on=["race_id", "num_pmu"], how="left")
     f["_p_model"] = f[model_col]
+    return f, sorted(set(columns) - set(cols))
+
+
+def run_angles(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """« Angles » de turfiste en simple gagnant (evaluation/angles.py), sur les prédictions
+    hors échantillon et les variables calculées sans fuite."""
+    from horse_intelligence.evaluation import angles
+
+    f, missing = _features_frame(engine, model_col, ANGLE_COLUMNS)
+    if f.empty:
+        return {"n_races": 0, "success": False, "finalists": []}
     rep = angles.run(f)
     return {"n_races": int(f["race_id"].nunique()),
             "period": (str(f["race_date"].min()), str(f["race_date"].max())),
-            "missing_columns": sorted(set(ANGLE_COLUMNS) - set(cols)), **rep}
+            "missing_columns": missing, **rep}
+
+
+def run_d4_draw(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Déferré des 4 pour la 1re fois × numéro de corde (evaluation/d4_draw.py)."""
+    from horse_intelligence.evaluation import d4_draw
+
+    f, missing = _features_frame(engine, model_col, ["shoes_d4_first", "draw", "autostart"])
+    if f.empty or "shoes_d4_first" in missing:
+        return {"n_races": 0, "success": False, "finalists": [], "missing_columns": missing}
+    if "autostart" in missing:
+        f["autostart"] = np.nan
+    rep = d4_draw.run(f)
+    return {"n_races": int(f["race_id"].nunique()),
+            "period": (str(f["race_date"].min()), str(f["race_date"].max())),
+            "missing_columns": missing, **rep}
