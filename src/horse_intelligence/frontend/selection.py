@@ -2,7 +2,9 @@
 et un signal d'information (« déferré des 4 pour la 1re fois », prediction/signals.py,
 ajouté à la demande de l'utilisateur le 23/11/2026 : réel mais non rentable).
 
-1. « 3e du modèle, simple gagnant, trot G » (ci-dessous).
+1. « 3e du modèle, simple gagnant, trot G » (ci-dessous) ; toutes réunions ouvertes aux
+   paris en ligne depuis le 23/11/2026, à la demande de l'utilisateur (test du même jour :
+   −3,2 % en nationales, −2,5 % en régionales, −2,8 % au total sur deux ans).
 2. « Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, espérance ≥ +10 %, gagnant »,
    figée le 21/11/2026 (evaluation/forward_rules.py) à la demande de l'utilisateur : seule
    famille positive sur les trois périodes de la grande recherche, mais NON significative.
@@ -48,7 +50,7 @@ PARIS = ZoneInfo("Europe/Paris")
 RULE_GROUP = "Trot G"
 RULE_RANK = 3  # 3e cheval du modèle
 RULE_MODEL = "lgbm_market"
-# réunions régionales et locales : hors du périmètre testé pour la règle trot G
+# réunions régionales et locales (audience de l'API PMU)
 REGIONAL_AUDIENCES = ("LOCAL", "REGIONAL")
 
 
@@ -155,13 +157,11 @@ def render() -> None:
                         key="selection_date")
     day = day if isinstance(day, date) else dates[0]
     all_races = _races_on(day)
-    national = national_races(all_races)
-    n_regional = len(all_races) - len(national)
     data = _day_data(day, all_races)
     tab_g, tab_value, tab_d4 = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)",
                                         "Déferré des 4 (1re fois)"])
     with tab_g:
-        _render_trot_g(national, n_regional, data)
+        _render_trot_g(all_races, data)
     with tab_value:
         _render_value(all_races, data)
     with tab_d4:
@@ -173,45 +173,52 @@ def render() -> None:
         "revenir dessus. Les tests ont été réglés aux rapports de la masse Internet du PMU.")
 
 
-def _render_trot_g(national: pd.DataFrame, n_regional: int, data: DayData) -> None:
-    st.warning("Règle NON validée : « 3e du modèle, simple gagnant, courses de trot G ». "
-               "Sur les réunions du programme national, avec le modèle actuel, elle aurait "
-               "donné −11,7 % sur deux ans (407 paris, intervalle de −35 % à +15 %) : aucun "
+def _render_trot_g(all_races: pd.DataFrame, data: DayData) -> None:
+    st.warning("Règle NON validée : « 3e du modèle, simple gagnant, courses de trot G », "
+               "toutes réunions (nationales, régionales, locales) ouvertes aux paris en "
+               "ligne. Avec le modèle actuel (réentraîné le 22/11/2026), elle aurait donné "
+               "−2,8 % sur deux ans (871 paris, intervalle de −21 % à +16 %) : aucun "
                "avantage démontré. À suivre de façon fictive, ou pour le plaisir avec de "
                "petites mises fixes.")
-    races = rule_races(national)
+    races = rule_races(all_races)
     if races.empty:
-        notice("Aucune course de trot G ce jour-là au programme national : rien à jouer.")
+        notice("Aucune course de trot G ce jour-là : rien à jouer.")
         return
 
     rows = []
     for r in races.to_dict("records"):
-        pred = data.pred(int(r["race_id"]))
-        # règle testée avec le modèle « LightGBM + marché » : sans cotes, pas de choix
+        rid = int(r["race_id"])
+        pred = data.pred(rid)
+        # règle testée avec le modèle « LightGBM + marché » : sans cotes, pas de choix ;
+        # jouée seulement là où le pari en ligne est ouvert (cotes Internet publiées)
         tested = pred is not None and pred.primary == RULE_MODEL and not pred.table.empty
-        pick = rule_pick(pred.table) if tested else None
-        names = data.names(int(r["race_id"]))
+        online = rid in data.online
+        pick = rule_pick(pred.table) if tested and online else None
+        names = data.names(rid)
         finish = None if pick is None else _finish(r, pick["num_pmu"])
+        if pick is not None:
+            remark = ""
+        elif tested:
+            remark = "pas de pari en ligne (aucune cote Internet)"
+        elif pred is not None and not pred.table.empty:
+            remark = "cotes pas encore publiées : revenir plus tard"
+        else:
+            remark = pred.message if pred is not None else "aucune prédiction"
         rows.append({
             "Départ": _paris_time(r["scheduled_start_utc"]),
             "Course": f"R{r['reunion_num']}C{r['course_num']}",
             "Hippodrome": r["racecourse"] or "?",
+            "Réunion": AUDIENCE_NAMES.get(str(r.get("audience")), "nationale"),
             "Distance": f"{r['distance_m'] or '?'} m",
-            "N° à jouer": "—" if pick is None else int(pick["num_pmu"]),
+            "N° à jouer": "—" if pick is None else str(int(pick["num_pmu"])),
             "Cheval": "—" if pick is None else names.get(pick["horse_id"], "?"),
             "P(victoire)": "—" if pick is None else f"{100 * pick['p_win']:.0f} %",
             "Cote réf.": "—" if pick is None or pd.isna(pick["mkt_odds"])
             else f"{pick['mkt_odds']:.1f}",
-            "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
-            "Remarque": "" if pick is not None else (
-                "cotes pas encore publiées : revenir plus tard"
-                if pred is not None and not pred.table.empty
-                else (pred.message if pred is not None else "aucune prédiction")),
+            "Arrivée": "—" if finish is None or pd.isna(finish) else str(int(finish)),
+            "Remarque": remark,
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    if n_regional:
-        st.caption(f"{n_regional} course(s) de réunions régionales ou locales non prises en "
-                   "compte : la règle trot G n'a été testée que sur les réunions nationales.")
 
 
 DISCIPLINE_NAMES = {"trot_attele": "trot attelé", "trot_monte": "trot monté", "plat": "plat",

@@ -138,8 +138,10 @@ def races_with_internet_odds(engine: Engine, race_ids: list[int]) -> set[int]:
 
 
 def forward_trot_g(engine: Engine, first_day: date = VALUE_46.first_day) -> pd.DataFrame:
-    """Règle de la page (3e du modèle, gagnant, trot G, réunions nationales) sur les mêmes
-    prédictions d'avant-course, pour le même bilan."""
+    """Règle de la page (3e du modèle, gagnant, trot G) sur les mêmes prédictions
+    d'avant-course, pour le même bilan. Toutes réunions depuis le 23/11/2026 (avant tout
+    résultat de suivi) : une course sans rapport Internet, donc sans pari en ligne, n'est
+    pas comptée."""
     from horse_intelligence.evaluation.segment_analysis import race_group
 
     entries = _last_predictions(engine, first_day)
@@ -154,7 +156,7 @@ def forward_trot_g(engine: Engine, first_day: date = VALUE_46.first_day) -> pd.D
     for rid, g in entries.groupby("race_id"):
         rid_i = int(cast(int, rid))
         first = g.iloc[0]
-        if (rid_i not in settled or first["audience"] in ("LOCAL", "REGIONAL")
+        if (rid_i not in settled
                 or race_group(first["label"], first["conditions_text"],
                               first["discipline"]) != "Trot G"
                 or len(g) < 3 or g["mkt_odds"].isna().any()):
