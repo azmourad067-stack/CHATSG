@@ -43,7 +43,7 @@ def main() -> int:
           f"verdict à partir de {MIN_BETS_VERDICT} paris")
     _print(f"{VALUE_46.name} (toutes réunions ouvertes aux paris en ligne)",
            verdict(forward_bets(engine)))
-    _print("3e du modèle, gagnant, trot G (réunions nationales)",
+    _print("3e du modèle, gagnant, trot G (toutes réunions ouvertes aux paris en ligne)",
            verdict(forward_trot_g(engine)))
     return 0
 

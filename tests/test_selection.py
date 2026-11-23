@@ -200,3 +200,103 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
     assert watch["Réunion"].tolist() == ["nationale", "régionale"]  # régionales incluses
     assert watch["Consulter vers"].iloc[0] != "—"
     assert any("Prochaine course à surveiller : R1C1" in i.value for i in at.info)
+
+
+def _d4_tab_script() -> None:
+    from datetime import date
+
+    import pandas as pd
+
+    from horse_intelligence.frontend import selection as sel
+
+    races = pd.DataFrame({
+        "race_id": [1, 2], "reunion_num": [1, 3], "course_num": [1, 2],
+        "label": ["A", "B"], "conditions_text": ["", ""],
+        "discipline": ["trot_attele", "trot_attele"], "distance_m": [2700, 2100],
+        "scheduled_start_utc": pd.to_datetime(["2099-01-01 12:00", "2099-01-01 13:00"]),
+        "result_final": [False, False], "audience": ["NATIONAL", "LOCAL"],
+        "racecourse": ["VINCENNES", "CORDEMAIS"]})
+    sel._render_d4(races, sel._day_data(date(2099, 1, 1), races))
+
+
+def test_d4_tab_lists_first_time_d4(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    from streamlit.testing.v1 import AppTest
+
+    from horse_intelligence.frontend import selection as sel
+
+    table = pd.DataFrame({"num_pmu": [1, 2, 3], "horse_id": [11, 12, 13],
+                          "p_win": [0.5, 0.3, 0.2], "mkt_odds": [2.0, 4.0, 6.0],
+                          "mkt_prob": [0.5, 0.3, 0.2]})
+    preds = {1: SimpleNamespace(primary=sel.RULE_MODEL, table=table, message=""),
+             2: SimpleNamespace(primary=None, table=pd.DataFrame(), message="")}
+    entries = pd.DataFrame({"race_id": [1, 1, 1, 2], "num_pmu": [1, 2, 3, 4],
+                            "horse_id": [11, 12, 13, 14],
+                            "horse": ["UN", "DEUX", "TROIS", "QUATRE"],
+                            "status": ["PARTANT"] * 4})
+    repo = SimpleNamespace(engine=None, entries_for_races=lambda ids: entries,
+                           results_for=lambda rid: pd.DataFrame())
+    monkeypatch.setattr(sel, "day_predictions", lambda day, ids: preds)
+    monkeypatch.setattr(sel, "races_with_internet_odds", lambda engine, ids: {1})
+    monkeypatch.setattr(sel, "first_time_d4", lambda engine, ids, day: {(1, 3), (2, 4)})
+    monkeypatch.setattr(sel, "get_context", lambda: SimpleNamespace(repo=repo))
+    at = AppTest.from_function(_d4_tab_script, default_timeout=30)
+    at.run()
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df["Cheval"].tolist() == ["TROIS", "QUATRE"]
+    assert df["Rang modèle"].tolist() == ["3", "—"]
+    assert df["Cote réf."].tolist() == ["6.0", "cotes pas encore publiées"]
+    assert df["Pari en ligne"].tolist() == ["oui", "pas de cote Internet"]
+
+
+def _trot_g_tab_script() -> None:
+    from datetime import date
+
+    import pandas as pd
+
+    from horse_intelligence.frontend import selection as sel
+
+    races = pd.DataFrame({
+        "race_id": [1, 2, 3], "reunion_num": [1, 9, 10], "course_num": [1, 2, 3],
+        "label": ["PRIX A", "PRIX B", "PRIX C"],
+        "conditions_text": ["Course G - Attelé"] * 3,
+        "discipline": ["trot_attele"] * 3, "distance_m": [2700, 2100, 2100],
+        "scheduled_start_utc": pd.to_datetime(["2099-01-01 12:00", "2099-01-01 13:00",
+                                               "2099-01-01 14:00"]),
+        "result_final": [False] * 3, "audience": ["NATIONAL", "REGIONAL", "LOCAL"],
+        "racecourse": ["VINCENNES", "SALON", "CORDEMAIS"]})
+    sel._render_trot_g(races, sel._day_data(date(2099, 1, 1), races))
+
+
+def test_trot_g_tab_includes_online_regional_races(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    from streamlit.testing.v1 import AppTest
+
+    from horse_intelligence.frontend import selection as sel
+
+    table = pd.DataFrame({"num_pmu": [1, 2, 3, 4], "horse_id": [11, 12, 13, 14],
+                          "p_win": [0.4, 0.3, 0.2, 0.1], "mkt_odds": [2.0, 4.0, 6.0, 9.0],
+                          "mkt_prob": [0.4, 0.3, 0.2, 0.1]})
+    preds = {rid: SimpleNamespace(primary=sel.RULE_MODEL, table=table, message="")
+             for rid in (1, 2, 3)}
+    entries = pd.concat([pd.DataFrame({"race_id": rid, "num_pmu": [1, 2, 3, 4],
+                                       "horse_id": [11, 12, 13, 14],
+                                       "horse": ["UN", "DEUX", "TROIS", "QUATRE"],
+                                       "status": "PARTANT"}) for rid in (1, 2, 3)])
+    repo = SimpleNamespace(engine=None, entries_for_races=lambda ids: entries,
+                           results_for=lambda rid: pd.DataFrame())
+    monkeypatch.setattr(sel, "day_predictions", lambda day, ids: preds)
+    # course locale n°3 : pas de cote Internet, donc pas de pari en ligne
+    monkeypatch.setattr(sel, "races_with_internet_odds", lambda engine, ids: {1, 2})
+    monkeypatch.setattr(sel, "first_time_d4", lambda engine, ids, day: set())
+    monkeypatch.setattr(sel, "get_context", lambda: SimpleNamespace(repo=repo))
+    at = AppTest.from_function(_trot_g_tab_script, default_timeout=30)
+    at.run()
+    assert not at.exception
+    df = at.dataframe[0].value
+    assert df["Réunion"].tolist() == ["nationale", "régionale", "locale"]
+    assert df["N° à jouer"].tolist() == ["3", "3", "—"]  # 3e du modèle
+    assert df["Remarque"].iloc[2].startswith("pas de pari en ligne")
