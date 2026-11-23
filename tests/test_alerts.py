@@ -40,29 +40,29 @@ def setup(repo):  # type: ignore[no-untyped-def]
 def test_one_sms_per_horse_inside_window_only(setup) -> None:  # type: ignore[no-untyped-def]
     repo, rows, preds = setup
     first = rows[0]
-    now = first.scheduled_start_utc - timedelta(minutes=15)
+    now = first.scheduled_start_utc - timedelta(minutes=50)
     sent: list[str] = []
     n = alerts.send_alerts(repo.engine, {first.race_id: preds[first.race_id]}, sent.append,
                            now)
-    assert n == 1 and "n°5" in sent[0] and "Valeur 4e-6e" in sent[0]
+    assert n == 1 and "n°5" in sent[0] and "Valeur 4e-6e (1 h avant)" in sent[0]
     assert "09 74 75 13 13" in sent[0]
     # collecte suivante, toujours dans le créneau : pas de doublon
     assert alerts.send_alerts(repo.engine, preds, sent.append, now + timedelta(minutes=5)) == 0
-    # trop tôt (40 min avant) ou trop tard (5 min avant) : rien
-    early = alerts.due_alerts(repo.engine, {first.race_id: preds[first.race_id]},
-                              first.scheduled_start_utc - timedelta(minutes=40))
-    assert early == []
+    # créneau 45 à 60 min avant : rien à 70 min, ni à 40 ou 5 min du départ
     with repo.engine.begin() as conn:
         conn.execute(db.alerts_sent.delete())
-    late = alerts.due_alerts(repo.engine, {first.race_id: preds[first.race_id]},
-                             first.scheduled_start_utc - timedelta(minutes=5))
-    assert late == []
+    one = {first.race_id: preds[first.race_id]}
+    for minutes in (70, 40, 5):
+        assert alerts.due_alerts(repo.engine, one,
+                                 first.scheduled_start_utc - timedelta(minutes=minutes)) == []
+    assert len(alerts.due_alerts(repo.engine, one,
+                                 first.scheduled_start_utc - timedelta(minutes=59))) == 1
 
 
 def test_regional_races_alerted_only_when_online_betting_is_open(setup) -> None:  # type: ignore[no-untyped-def]
     repo, rows, preds = setup
     first = rows[0]
-    now = first.scheduled_start_utc - timedelta(minutes=15)
+    now = first.scheduled_start_utc - timedelta(minutes=50)
     one = {first.race_id: preds[first.race_id]}
     with repo.engine.begin() as conn:
         conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
@@ -77,6 +77,16 @@ def test_regional_races_alerted_only_when_online_betting_is_open(setup) -> None:
     assert alerts.due_alerts(repo.engine, one, now) == []
     no_market_model = {first.race_id: DayPrediction(first.race_id, "lgbm_form", _table())}
     assert alerts.due_alerts(repo.engine, no_market_model, now) == []
+
+
+def test_alerts_follow_the_early_rule() -> None:
+    from horse_intelligence.evaluation.forward_rules import VALUE_46, VALUE_46_EARLY
+
+    assert alerts.RULE is VALUE_46_EARLY and VALUE_46_EARLY.lead_minutes == (45, 60)
+    assert (timedelta(minutes=45), timedelta(minutes=60)) == alerts.ALERT_WINDOW
+    # mêmes critères que la règle d'origine, seul le moment de la décision change
+    for f in ("ranks", "odds", "runners", "min_ev", "payout_factor", "bet_type"):
+        assert getattr(VALUE_46_EARLY, f) == getattr(VALUE_46, f)
 
 
 def test_free_mobile_sender(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -14,6 +14,7 @@ from horse_intelligence.evaluation.forward_rules import (
     D4_AUTOSTART,
     MIN_BETS_VERDICT,
     VALUE_46,
+    VALUE_46_EARLY,
     forward_bets,
     forward_d4,
     forward_trot_g,
@@ -45,6 +46,9 @@ def main() -> int:
           f"verdict à partir de {MIN_BETS_VERDICT} paris")
     _print(f"{VALUE_46.name} (toutes réunions ouvertes aux paris en ligne)",
            verdict(forward_bets(engine)))
+    _print(f"{VALUE_46_EARLY.name} (figée le {VALUE_46_EARLY.frozen_on}, jugée à partir du "
+           f"{VALUE_46_EARLY.first_day} ; règle des alertes SMS)",
+           verdict(forward_bets(engine, VALUE_46_EARLY)))
     _print(f"{D4_AUTOSTART.name} (figée le {D4_AUTOSTART.frozen_on}, jugée à partir du "
            f"{D4_AUTOSTART.first_day})", verdict(forward_d4(engine)))
     _print("3e du modèle, gagnant, trot G (toutes réunions ouvertes aux paris en ligne)",

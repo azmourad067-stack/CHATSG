@@ -147,3 +147,34 @@ def test_forward_d4_bets_first_time_d4_in_places_4_to_6(repo) -> None:  # type: 
     assert set(bets["race_date"]) == {days[1]}
     assert set(bets["num_pmu"]) <= {4, 5}
     assert (bets["profit"] >= -1).all() and (bets["mkt_odds"] <= 9).all()
+
+
+def test_early_rule_decides_on_the_prediction_45_to_60_min_before(repo) -> None:  # type: ignore[no-untyped-def]
+    from sqlalchemy import insert, select
+    from tests.synthetic import populate
+
+    from horse_intelligence.data.storage import database as db
+
+    populate(repo, days=2)
+    with repo.engine.begin() as conn:
+        rid, day, start = conn.execute(select(db.races.c.race_id, db.races.c.race_date,
+                                              db.races.c.scheduled_start_utc)
+                                       .order_by(db.races.c.race_id).limit(1)).one()
+        model_id = conn.execute(insert(db.model_versions).values(
+            family="lgbm_market", version="t", status="active",
+            created_at=datetime.now(UTC))).inserted_primary_key[0]
+        nums = conn.execute(select(db.race_entries.c.num_pmu).distinct()
+                            .where(db.race_entries.c.race_id == rid)).scalars().all()
+        # 55 min avant : cote 12 ; 15 min avant : cote 6 (le cheval a été joué)
+        for lead, odds in ((70, 30.0), (55, 12.0), (15, 6.0)):
+            pid = conn.execute(insert(db.predictions).values(
+                race_id=rid, model_id=model_id, decision_time=start - timedelta(minutes=lead),
+                created_at=start, data_status="ok", input_snapshot_hash="h"
+            )).inserted_primary_key[0]
+            conn.execute(insert(db.prediction_entries), [
+                {"prediction_id": pid, "num_pmu": n, "p_win": 1 / len(nums), "rank": 1,
+                 "mkt_odds": odds} for n in nums])
+    early = fr._last_predictions(repo.engine, day, (45, 60))
+    assert set(early["mkt_odds"]) == {12.0}
+    assert set(fr._last_predictions(repo.engine, day)["mkt_odds"]) == {6.0}
+    assert fr._last_predictions(repo.engine, day, (75, 90)).empty
