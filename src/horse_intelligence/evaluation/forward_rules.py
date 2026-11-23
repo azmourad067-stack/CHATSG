@@ -199,8 +199,8 @@ def is_autostart(conditions_text: object) -> bool:
 
 def start_place(draw: object, num_pmu: object) -> float:
     """Place au départ : numéro de corde publié, sinon numéro PMU."""
-    d = pd.to_numeric(pd.Series([draw]), errors="coerce").iloc[0]
-    return float(d) if pd.notna(d) else float(pd.to_numeric(num_pmu, errors="coerce"))
+    d, n = pd.to_numeric(pd.Series([draw, num_pmu]), errors="coerce").tolist()
+    return float(d) if pd.notna(d) else float(n)
 
 
 def d4_rule_match(place: float, mkt_odds: float | None, autostart: bool, d4_first: bool,
@@ -233,7 +233,8 @@ def forward_d4(engine: Engine, rule: D4StartRule = D4_AUTOSTART) -> pd.DataFrame
                                                       draws["draw"], strict=True)}
     d4: set[tuple[int, int]] = set()
     for day, g in entries.groupby("race_date"):
-        d4 |= first_time_d4(engine, sorted({int(x) for x in g["race_id"]}), day)
+        d4 |= first_time_d4(engine, sorted({int(x) for x in g["race_id"]}),
+                            cast(date, day))
     settled = set(payouts["race_id"].astype(int))
     paid = {(int(r), str(c)): float(v) for r, c, v in zip(
         payouts["race_id"], payouts["combination"], payouts["payout_per_eur"], strict=True)}
