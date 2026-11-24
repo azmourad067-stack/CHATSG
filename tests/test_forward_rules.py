@@ -231,3 +231,14 @@ def test_small_value_forward_bets_keep_only_small_races(repo) -> None:  # type: 
     assert set(fr.forward_bets(repo.engine, fr.ValueRule(
         "t2", rule.frozen_on, (1, 99), (2.0, 20.0), (0, 99), 0.10, lead_minutes=(13, 28)
     ))["race_id"]) > set(bets["race_id"])
+
+
+def test_small_value_early_differs_only_by_decision_time() -> None:
+    a, b = fr.SMALL_VALUE, fr.SMALL_VALUE_EARLY
+    assert b.lead_minutes == (45, 60) and b.frozen_on == a.frozen_on
+    for f in ("ranks", "odds", "runners", "min_ev", "payout_factor", "bet_type",
+              "small_races"):
+        assert getattr(a, f) == getattr(b, f)
+    from horse_intelligence import alerts
+
+    assert all(ar.rule is not b for ar in alerts.ALERT_RULES)  # pas de SMS
