@@ -200,6 +200,7 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
     assert watch["Réunion"].tolist() == ["nationale", "régionale"]  # régionales incluses
     assert watch["Consulter vers"].iloc[0] != "—"
     assert any("Prochaine course à surveiller : R1C1" in i.value for i in at.info)
+    assert any(i.value.startswith("Seul le SMS fait foi") for i in at.info)
 
 
 def _small_tab_script() -> None:

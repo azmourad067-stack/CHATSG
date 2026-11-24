@@ -270,6 +270,12 @@ def _render_value(races: pd.DataFrame, data: DayData) -> None:
         "+76 % : c'est peut-être de la chance (8 640 stratégies essayées). Environ 800 "
         "paris par an (toutes réunions ouvertes aux paris en ligne), environ 1 gagnant sur "
         "9. À suivre de façon fictive, ou avec de très petites mises fixes.")
+    st.info(
+        "Seul le SMS fait foi : il est envoyé 45 à 60 minutes avant le départ, avec les "
+        "chevaux retenus à ce moment-là (version « 1 h avant » choisie le 23/11/2026). Cet "
+        "onglet montre, lui, le choix du moment : quand le PMU publie ses cotes de "
+        "référence, 30 minutes avant le départ, un cheval peut entrer ou sortir de la "
+        "liste. Un cheval apparu ici après l'heure du SMS est hors règle : ne le jouez pas.")
     if races.empty:
         notice("Aucune course ce jour-là.")
         return
