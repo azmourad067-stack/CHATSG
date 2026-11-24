@@ -82,6 +82,13 @@ SMALL_AUDIENCES = ("REGIONAL", "LOCAL")
 SMALL_VALUE = ValueRule(
     "Petites courses, espérance ≥ +10 %, cote 2 à 20, gagnant", date(2026, 11, 24),
     (1, 99), (2.0, 20.0), (0, 99), 0.10, lead_minutes=(13, 28), small_races=True)
+# même règle décidée 45 à 60 min avant le départ : suivie en arrière-plan seulement (ni
+# SMS ni affichage), à la demande de l'utilisateur le 24/11/2026, pour comparer les deux
+# moments de décision sur les courses à venir (novembre, avant gel : 32 paris, −11 %
+# contre 61 paris, −35 % à 13-28 min ; écart non significatif)
+SMALL_VALUE_EARLY = ValueRule(
+    "Petites courses, décision 45 à 60 min avant (suivi seulement)", date(2026, 11, 24),
+    (1, 99), (2.0, 20.0), (0, 99), 0.10, lead_minutes=(45, 60), small_races=True)
 
 
 def is_small_race(audience: object, prize_eur: object) -> bool:
