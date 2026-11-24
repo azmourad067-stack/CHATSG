@@ -38,9 +38,11 @@ from sqlalchemy import select
 from horse_intelligence.data.storage import database as db
 from horse_intelligence.evaluation.forward_rules import (
     D4_AUTOSTART,
+    SMALL_VALUE,
     VALUE_46,
     d4_rule_match,
     is_autostart,
+    is_small_race,
     races_with_internet_odds,
     rule_picks,
     start_place,
@@ -88,7 +90,7 @@ def _races_on(day: date) -> pd.DataFrame:
     stmt = (select(r.c.race_id, r.c.reunion_num, r.c.course_num, r.c.label,
                    r.c.conditions_text, r.c.discipline, r.c.distance_m,
                    r.c.scheduled_start_utc, r.c.result_final, r.c.audience,
-                   rc.c.name.label("racecourse"))
+                   r.c.prize_eur, rc.c.name.label("racecourse"))
             .join(rc, rc.c.racecourse_id == r.c.racecourse_id, isouter=True)
             .where(r.c.race_date == day).order_by(r.c.scheduled_start_utc))
     with get_context().repo.engine.connect() as conn:
@@ -163,12 +165,15 @@ def render() -> None:
     day = day if isinstance(day, date) else dates[0]
     all_races = _races_on(day)
     data = _day_data(day, all_races)
-    tab_g, tab_value, tab_d4 = st.tabs(["3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)",
-                                        "Déferré 4 autostart (place 4-6)"])
+    tab_g, tab_value, tab_small, tab_d4 = st.tabs([
+        "3e du modèle, trot G", "Valeur 4e-6e (cote 9-20)", "Petites courses (valeur)",
+        "Déferré 4 autostart (place 4-6)"])
     with tab_g:
         _render_trot_g(all_races, data)
     with tab_value:
         _render_value(all_races, data)
+    with tab_small:
+        _render_small(all_races, data)
     with tab_d4:
         _render_d4(all_races, data)
     st.caption(
@@ -346,6 +351,99 @@ def _render_value(races: pd.DataFrame, data: DayData) -> None:
     st.caption(" ".join(notes) + " Une même course peut donner plusieurs chevaux (1 € "
                "chacun dans les tests). L'espérance est calculée sur la cote de référence "
                "× 0,90 : ce n'est pas un gain garanti.")
+
+
+# décision de la règle « petites courses » : 13 à 28 min avant le départ, une fois publiées
+# les cotes de référence du PMU (30 min avant), comme dans son test
+SMALL_CHECK = (timedelta(minutes=28), timedelta(minutes=13))
+
+
+def _start_ts(value: object) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):  # type: ignore[call-overload]
+        return None
+    ts = pd.Timestamp(value)  # type: ignore[arg-type]
+    return ts.tz_localize(UTC) if ts.tzinfo is None else ts
+
+
+def _render_small(races: pd.DataFrame, data: DayData) -> None:
+    rule = SMALL_VALUE
+    st.warning(
+        "Règle NON validée, figée le 24/11/2026 pour être jugée sur les courses à venir : "
+        "« petites courses (réunions régionales ou locales, ou allocation jusqu'à 10 000 €), "
+        "espérance du modèle d'au moins +10 %, cote 2 à 20, simple gagnant ». Fixée avant "
+        "son test sur deux ans : +15,4 % (1 535 paris, environ 1 gagnant sur 4), +8,0 % sur "
+        "les six derniers mois ; marge d'erreur de −2 % à +35 % : pas encore une preuve. À "
+        "suivre de façon fictive, ou avec de très petites mises fixes.")
+    small = races[[is_small_race(a, z) for a, z in
+                   zip(races.get("audience", pd.Series(dtype=object)),
+                       races.get("prize_eur", pd.Series(dtype=float)), strict=True)]] \
+        if not races.empty else races
+    if small.empty:
+        notice("Aucune petite course ce jour-là (réunion régionale ou locale, ou allocation "
+               "jusqu'à 10 000 €).")
+        return
+    now = datetime.now(UTC)
+    rows, watch = [], []
+    for r in small.to_dict("records"):
+        rid = int(r["race_id"])
+        pred = data.pred(rid)
+        priced = pred is not None and pred.primary == RULE_MODEL and not pred.table.empty
+        online = rid in data.online
+        table = pred.table if priced and online else pd.DataFrame(
+            columns=["num_pmu", "horse_id", "p_win", "mkt_odds"])
+        picks = rule_picks(table, rule) if not table.empty else table
+        start_ts = _start_ts(r["scheduled_start_utc"])
+        started = start_ts is not None and start_ts <= now
+        finished = bool(r["result_final"])
+        prize = pd.to_numeric(pd.Series([r.get("prize_eur")]), errors="coerce").iloc[0]
+        watch.append({
+            "_start": start_ts,
+            "Départ": _paris_time(start_ts),
+            "Décider entre": "—" if start_ts is None else
+            f"{_paris_time(start_ts - SMALL_CHECK[0])} et {_paris_time(start_ts - SMALL_CHECK[1])}",
+            "Course": f"R{r['reunion_num']}C{r['course_num']}",
+            "Hippodrome": r["racecourse"] or "?",
+            "Réunion": AUDIENCE_NAMES.get(str(r.get("audience")), "nationale"),
+            "Allocation": "—" if pd.isna(prize) else f"{float(prize):,.0f} €".replace(",", " "),
+            "État": "pas de pari en ligne (aucune cote Internet)"
+            if pred is not None and pred.primary == RULE_MODEL and not online and not finished
+            else watch_state(table, picks, started, finished),
+        })
+        names = data.names(rid)
+        for pick in picks.to_dict("records"):
+            finish = _finish(r, int(pick["num_pmu"]))
+            rows.append({
+                "Départ": _paris_time(start_ts),
+                "Course": f"R{r['reunion_num']}C{r['course_num']}",
+                "Hippodrome": r["racecourse"] or "?",
+                "N° à jouer": int(pick["num_pmu"]),
+                "Cheval": names.get(pick["horse_id"], "?"),
+                "Rang modèle": int(pick["model_rank"]),
+                "P(victoire)": f"{100 * pick['p_win']:.1f} %",
+                "Cote réf.": f"{pick['mkt_odds']:.1f}",
+                "Espérance": f"{100 * pick['ev']:+.0f} %",
+                "Arrivée": "—" if finish is None or pd.isna(finish) else int(finish),
+            })
+    watch_df = pd.DataFrame(watch).sort_values("_start", na_position="last")
+    upcoming = watch_df[watch_df["_start"].notna() & (watch_df["_start"] > now)]
+    if not upcoming.empty:
+        nxt = upcoming.iloc[0]
+        st.info(f"Prochaine petite course : {nxt['Course']} ({nxt['Hippodrome']}) à "
+                f"{nxt['Départ']}. Décision entre {nxt['Décider entre']} (un SMS est envoyé "
+                f"à ce moment si un cheval est retenu).")
+    st.subheader("Chevaux retenus")
+    if rows:
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    else:
+        notice("Aucun cheval retenu pour l'instant. La liste dépend des cotes : elle n'est "
+               "valable qu'entre 28 et 13 minutes avant le départ.")
+    st.subheader(f"Petites courses du jour ({len(watch_df)})")
+    st.dataframe(watch_df.drop(columns="_start"), hide_index=True, width="stretch")
+    st.caption("Le test sur deux ans décide sur les cotes de référence que le PMU publie 30 "
+               "minutes avant le départ : jouez les chevaux retenus entre 28 et 13 minutes "
+               "avant la course, sans revenir dessus. Seules les courses ouvertes au pari en "
+               "ligne (cotes Internet) sont jouées. L'espérance est calculée sur la cote × "
+               "0,90 : ce n'est pas un gain garanti.")
 
 
 def _render_d4(races: pd.DataFrame, data: DayData) -> None:

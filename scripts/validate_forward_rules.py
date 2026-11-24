@@ -13,6 +13,7 @@ import _bootstrap  # noqa: F401
 from horse_intelligence.evaluation.forward_rules import (
     D4_AUTOSTART,
     MIN_BETS_VERDICT,
+    SMALL_VALUE,
     VALUE_46,
     VALUE_46_EARLY,
     forward_bets,
@@ -49,6 +50,9 @@ def main() -> int:
     _print(f"{VALUE_46_EARLY.name} (figée le {VALUE_46_EARLY.frozen_on}, jugée à partir du "
            f"{VALUE_46_EARLY.first_day} ; règle des alertes SMS)",
            verdict(forward_bets(engine, VALUE_46_EARLY)))
+    _print(f"{SMALL_VALUE.name} (figée le {SMALL_VALUE.frozen_on}, jugée à partir du "
+           f"{SMALL_VALUE.first_day} ; décision 13 à 28 min avant le départ)",
+           verdict(forward_bets(engine, SMALL_VALUE)))
     _print(f"{D4_AUTOSTART.name} (figée le {D4_AUTOSTART.frozen_on}, jugée à partir du "
            f"{D4_AUTOSTART.first_day})", verdict(forward_d4(engine)))
     _print("3e du modèle, gagnant, trot G (toutes réunions ouvertes aux paris en ligne)",
