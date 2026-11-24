@@ -202,6 +202,65 @@ def test_value_tab_lists_races_to_watch(monkeypatch) -> None:  # type: ignore[no
     assert any("Prochaine course à surveiller : R1C1" in i.value for i in at.info)
 
 
+def _small_tab_script() -> None:
+    from datetime import date
+
+    import pandas as pd
+
+    from horse_intelligence.frontend import selection as sel
+
+    races = pd.DataFrame({
+        "race_id": [1, 2, 3, 4], "reunion_num": [1, 5, 1, 6], "course_num": [1, 1, 2, 1],
+        "label": ["A", "B", "C", "D"], "conditions_text": [""] * 4,
+        "discipline": ["plat", "trot_attele", "plat", "plat"],
+        "distance_m": [1600, 2700, 1600, 1600],
+        "scheduled_start_utc": pd.to_datetime(["2099-01-01 12:00", "2099-01-01 13:00",
+                                               "2099-01-01 14:00", "2099-01-01 15:00"]),
+        "result_final": [False] * 4, "audience": ["NATIONAL", "REGIONAL", "NATIONAL", "LOCAL"],
+        "prize_eur": [20000.0, 30000.0, 8000.0, 5000.0],
+        "racecourse": ["VINCENNES", "PAU", "CAEN", "SALON"]})
+    sel._render_small(races, sel._day_data(date(2099, 1, 1), races))
+
+
+def test_small_races_tab_applies_the_frozen_rule(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    from streamlit.testing.v1 import AppTest
+
+    from horse_intelligence.frontend import selection as sel
+
+    p = [0.25, 0.18, 0.12, 0.10, 0.09, 0.07, 0.06, 0.05, 0.04, 0.04]
+    odds = [3.0, 5.0, 8.0, 12.0, 20.0, 9.0, 15.0, 18.0, 30.0, 40.0]
+    table = pd.DataFrame({"num_pmu": range(1, 11), "horse_id": range(101, 111), "p_win": p,
+                          "mkt_odds": odds, "mkt_prob": p})
+    preds = {rid: SimpleNamespace(primary=sel.RULE_MODEL, table=table, message="")
+             for rid in (1, 2, 3)}
+    preds[4] = SimpleNamespace(primary="lgbm_form", table=table.iloc[0:0], message="")
+    entries = pd.concat([pd.DataFrame({"race_id": rid, "num_pmu": range(1, 11),
+                                       "horse_id": range(101, 111),
+                                       "horse": [f"CHEVAL {i}" for i in range(1, 11)],
+                                       "status": "PARTANT"}) for rid in (1, 2, 3, 4)])
+    repo = SimpleNamespace(engine=None, entries_for_races=lambda ids: entries,
+                           results_for=lambda rid: pd.DataFrame())
+    monkeypatch.setattr(sel, "day_predictions", lambda day, ids: preds)
+    # course 3 (8 000 €) sans cote Internet : pas de pari en ligne
+    monkeypatch.setattr(sel, "races_with_internet_odds", lambda engine, ids: {1, 2, 4})
+    monkeypatch.setattr(sel, "first_time_d4", lambda engine, ids, day: set())
+    monkeypatch.setattr(sel, "get_context", lambda: SimpleNamespace(repo=repo))
+    at = AppTest.from_function(_small_tab_script, default_timeout=30)
+    at.run()
+    assert not at.exception
+    picks, watch = at.dataframe[0].value, at.dataframe[1].value
+    # seul le n°5 (cote 20, espérance +62 %) de la course régionale est retenu
+    assert picks["Course"].tolist() == ["R5C1"] and picks["N° à jouer"].tolist() == [5]
+    # la course nationale à 20 000 € n'est pas une petite course
+    assert watch["Course"].tolist() == ["R5C1", "R1C2", "R6C1"]
+    assert watch["État"].iloc[1].startswith("pas de pari en ligne")
+    assert watch["État"].iloc[2].startswith("cotes pas encore publiées")
+    assert watch["Décider entre"].iloc[0] == "13:32 et 13:47"
+    assert at.warning[0].value.startswith("Règle NON validée, figée le 24/11/2026")
+
+
 def _d4_tab_script() -> None:
     from datetime import date
 

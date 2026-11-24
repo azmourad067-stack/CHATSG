@@ -26,6 +26,16 @@ même règle, mais décidée sur la dernière prédiction faite 45 à 60 min ava
 comparaison faite APRÈS coup : 20 paris, +134 % (IC [−17 % ; +308 %]) contre 37 paris,
 −40 % pour la décision 8 à 25 min avant. Non significatif ; suivie à part. C'est elle
 que suivent les alertes SMS depuis le 23/11/2026.
+
+« Petites courses, valeur » (SMALL_VALUE), figée le 24/11/2026 à la demande de
+l'utilisateur : réunions régionales ou locales, ou allocation ≤ 10 000 € ; modèle de
+production ; espérance ≥ +10 % (p × cote × 0,90 − 1), cote 2 à 20, simple gagnant. Règle
+fixée AVANT le test walk-forward du 24/11/2026 (evaluation/small_meetings.py) : +15,4 %
+sur deux ans (1 535 paris, IC 95 % [−2 % ; +35 %]), +8,0 % sur les six derniers mois ;
+NON significative, et l'idée des petites courses vient des mêmes données. Le test décide
+sur les cotes de référence publiées par le PMU 30 minutes avant le départ (vérifié sur
+toutes les courses : 90 % publiées entre 30 et 35 min avant) : la décision est donc prise
+sur la dernière prédiction faite 13 à 28 min avant le départ (après cette publication).
 """
 
 from __future__ import annotations
@@ -54,6 +64,8 @@ class ValueRule:
     # décision prise sur la dernière prédiction faite entre lead[0] (exclu) et lead[1]
     # (inclus) minutes avant le départ ; None : la toute dernière avant le départ
     lead_minutes: tuple[int, int] | None = None
+    # petites courses seulement (réunion régionale ou locale, ou allocation ≤ SMALL_PRIZE)
+    small_races: bool = False
 
     @property
     def first_day(self) -> date:
@@ -65,6 +77,18 @@ VALUE_46 = ValueRule("Valeur 4e-6e du modèle, cote 9 à 20, 10 à 14 partants, 
 VALUE_46_EARLY = ValueRule(
     "Valeur 4e-6e, décision 45 à 60 min avant le départ, gagnant", date(2026, 11, 23),
     (4, 6), (9.0, 20.0), (10, 14), 0.10, lead_minutes=(45, 60))
+SMALL_PRIZE = 10000.0
+SMALL_AUDIENCES = ("REGIONAL", "LOCAL")
+SMALL_VALUE = ValueRule(
+    "Petites courses, espérance ≥ +10 %, cote 2 à 20, gagnant", date(2026, 11, 24),
+    (1, 99), (2.0, 20.0), (0, 99), 0.10, lead_minutes=(13, 28), small_races=True)
+
+
+def is_small_race(audience: object, prize_eur: object) -> bool:
+    """Réunion régionale ou locale, ou allocation ≤ SMALL_PRIZE € (petite course)."""
+    prize = pd.to_numeric(pd.Series([prize_eur]), errors="coerce").iloc[0]
+    return bool(str(audience) in SMALL_AUDIENCES
+                or (pd.notna(prize) and float(prize) <= SMALL_PRIZE))
 
 
 def rule_picks(table: pd.DataFrame, rule: ValueRule = VALUE_46) -> pd.DataFrame:
@@ -89,6 +113,7 @@ def _last_predictions(engine: Engine, first_day: date,
     lead[0] exclu et lead[1] inclus minutes avant le départ)."""
     query = text("""
         SELECT p.prediction_id, p.race_id, p.decision_time, r.race_date, r.audience,
+               r.prize_eur,
                r.label, r.conditions_text, r.discipline, r.scheduled_start_utc
         FROM predictions p JOIN races r ON r.race_id = p.race_id
         WHERE r.race_date >= :first""")
@@ -125,6 +150,9 @@ def forward_bets(engine: Engine, rule: ValueRule = VALUE_46,
             conn, params={"bt": rule.bet_type})
     if national_only and not entries.empty:
         entries = entries[~entries["audience"].isin(("LOCAL", "REGIONAL"))]
+    if rule.small_races and not entries.empty:
+        entries = entries[[is_small_race(a, z) for a, z in
+                           zip(entries["audience"], entries["prize_eur"], strict=True)]]
     settled = set(payouts["race_id"].astype(int))
     paid = {(int(r), str(c)): float(v) for r, c, v in zip(
         payouts["race_id"], payouts["combination"], payouts["payout_per_eur"], strict=True)}

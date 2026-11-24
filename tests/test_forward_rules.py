@@ -178,3 +178,56 @@ def test_early_rule_decides_on_the_prediction_45_to_60_min_before(repo) -> None:
     assert set(early["mkt_odds"]) == {12.0}
     assert set(fr._last_predictions(repo.engine, day)["mkt_odds"]) == {6.0}
     assert fr._last_predictions(repo.engine, day, (75, 90)).empty
+
+
+def test_small_value_rule_matches_the_walk_forward_test() -> None:
+    from horse_intelligence.evaluation import small_meetings as sm
+
+    r = fr.SMALL_VALUE
+    assert r.small_races and r.lead_minutes == (13, 28) and r.min_ev == sm.MIN_EV
+    assert r.odds == sm.ODDS and r.payout_factor == gs.PAYOUT_FACTOR
+    assert fr.SMALL_PRIZE == sm.SMALL_PRIZE and fr.SMALL_AUDIENCES == sm.SMALL_AUDIENCES
+    assert fr.is_small_race("REGIONAL", 50000) and fr.is_small_race("NATIONAL", 9000)
+    assert not fr.is_small_race("NATIONAL", 20000) and not fr.is_small_race(None, None)
+    # mêmes chevaux que la règle du test (tous rangs, tous partants)
+    t = _table([3.0, 12.0, 25.0, 1.8, 15.0], [0.30, 0.12, 0.06, 0.40, 0.04])
+    picks = fr.rule_picks(t, r)
+    expect = sm.value_mask(t["p_win"].to_numpy(), t["mkt_odds"].to_numpy())
+    assert sorted(picks["num_pmu"]) == sorted(t.loc[expect, "num_pmu"])
+
+
+def test_small_value_forward_bets_keep_only_small_races(repo) -> None:  # type: ignore[no-untyped-def]
+    from sqlalchemy import insert, select, update
+    from tests.synthetic import populate
+
+    from horse_intelligence.data.storage import database as db
+
+    populate(repo, days=3)
+    r = db.races
+    with repo.engine.begin() as conn:
+        rows = conn.execute(select(r.c.race_id, r.c.race_date, r.c.scheduled_start_utc,
+                                   r.c.course_num)).all()
+        conn.execute(update(r).where(r.c.course_num == 1).values(audience="REGIONAL"))
+        conn.execute(update(r).where(r.c.course_num == 2).values(prize_eur=8000.0))
+        model_id = conn.execute(insert(db.model_versions).values(
+            family="lgbm_market", version="t", status="active",
+            created_at=datetime.now(UTC))).inserted_primary_key[0]
+        for rid, _, start, _ in rows:
+            nums = conn.execute(select(db.race_entries.c.num_pmu).distinct().where(
+                db.race_entries.c.race_id == rid)).scalars().all()
+            pid = conn.execute(insert(db.predictions).values(
+                race_id=rid, model_id=model_id, decision_time=start - timedelta(minutes=20),
+                created_at=start, data_status="ok", input_snapshot_hash="h"
+            )).inserted_primary_key[0]
+            conn.execute(insert(db.prediction_entries), [
+                {"prediction_id": pid, "num_pmu": n, "p_win": 0.15, "rank": 1,
+                 "mkt_odds": 10.0} for n in nums])
+    rule = fr.ValueRule("test", rows[0].race_date - timedelta(days=1), (1, 99), (2.0, 20.0),
+                        (0, 99), 0.10, lead_minutes=(13, 28), small_races=True)
+    bets = fr.forward_bets(repo.engine, rule)
+    courses = {c for rid, _, _, c in rows if rid in set(bets["race_id"])}
+    assert not bets.empty and courses <= {1, 2}
+    # sans le filtre : toutes les courses
+    assert set(fr.forward_bets(repo.engine, fr.ValueRule(
+        "t2", rule.frozen_on, (1, 99), (2.0, 20.0), (0, 99), 0.10, lead_minutes=(13, 28)
+    ))["race_id"]) > set(bets["race_id"])

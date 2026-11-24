@@ -89,6 +89,30 @@ def test_alerts_follow_the_early_rule() -> None:
         assert getattr(VALUE_46_EARLY, f) == getattr(VALUE_46, f)
 
 
+def test_small_races_rule_alerts_13_to_28_minutes_before(setup) -> None:  # type: ignore[no-untyped-def]
+    repo, rows, preds = setup
+    first = rows[0]
+    one = {first.race_id: preds[first.race_id]}
+    small = next(a for a in alerts.ALERT_RULES if a.name == "petites_courses_valeur")
+    assert small.window == (timedelta(minutes=13), timedelta(minutes=28))
+    at = first.scheduled_start_utc - timedelta(minutes=20)
+    # course nationale à 20 000 € : pas une petite course, rien à 20 min
+    assert alerts.due_alerts(repo.engine, one, at) == []
+    with repo.engine.begin() as conn:
+        conn.execute(update(db.races).where(db.races.c.race_id == first.race_id)
+                     .values(audience="LOCAL"))
+    due = alerts.due_alerts(repo.engine, one, at)
+    assert [a.rule for a in due] == ["petites_courses_valeur"]
+    assert due[0].text.startswith("Pari Petites courses (valeur)")
+    sent: list[str] = []
+    assert alerts.send_alerts(repo.engine, one, sent.append, at) == 1
+    assert alerts.send_alerts(repo.engine, one, sent.append, at + timedelta(minutes=5)) == 0
+    # les deux règles sont indépendantes : la règle « 1 h avant » alerte aussi à 50 min
+    assert [a.rule for a in alerts.due_alerts(
+        repo.engine, one, first.scheduled_start_utc - timedelta(minutes=50))] == [
+        alerts.RULE_NAME]
+
+
 def test_free_mobile_sender(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls = []
 
