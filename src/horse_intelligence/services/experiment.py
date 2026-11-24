@@ -1207,3 +1207,132 @@ def run_market_bias(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any
     rep = market_bias.run(f, model_col)
     return {"n_races": int(f["race_id"].nunique()),
             "period": (str(f["race_date"].min()), str(f["race_date"].max())), **rep}
+
+
+def _corrected_paired(frame: pd.DataFrame, a: str, b: str, alpha: float, n_boot: int = 2000,
+                      seed: int = 0) -> dict[str, float]:
+    """Différence de log-loss par course (a − b), IC à 1 − alpha (rééchantillonnage des
+    courses). Négatif = a meilleur."""
+    from horse_intelligence.evaluation.metrics import eval_frame, race_log_losses
+
+    la = race_log_losses(eval_frame(frame, frame[a]))
+    lb = race_log_losses(eval_frame(frame, frame[b]))
+    common = la.index.intersection(lb.index)
+    d = (la.loc[common] - lb.loc[common]).to_numpy()
+    if d.size == 0:
+        return {"n_races": 0, "mean_diff": float("nan"), "ci_low": float("nan"),
+                "ci_high": float("nan")}
+    rng = np.random.default_rng(seed)
+    boots = d[rng.integers(0, d.size, size=(n_boot, d.size))].mean(axis=1)
+    return {"n_races": int(d.size), "mean_diff": float(d.mean()),
+            "ci_low": float(np.quantile(boots, alpha / 2)),
+            "ci_high": float(np.quantile(boots, 1 - alpha / 2))}
+
+
+def run_small_meetings(engine: Engine, min_train_days: int = 21, test_days: int = 7,
+                       calib_days: int = 14) -> dict[str, Any]:
+    """Modèle spécialisé pour les petites courses contre la production, en walk-forward
+    (evaluation/small_meetings.py ; critères fixés à l'avance)."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import small_meetings as sm
+    from horse_intelligence.evaluation.profile_search import prepare
+
+    t0 = time.perf_counter()
+    raw = load_raw(engine)
+    ds = build_dataset(raw)
+    if not audit_source_aggregates(ds.frame).passed:
+        ds = build_dataset(raw, use_source_aggregates=False)
+    frame = ds.frame[ds.frame["won"].notna() & (ds.frame["n_runners"] >= 2)]
+    with engine.connect() as conn:
+        races = pd.read_sql(text("SELECT race_id, audience, prize_eur AS _prize FROM races"),
+                            conn)
+    frame = frame.merge(races, on="race_id", how="left")
+    if "prize_eur" not in frame:
+        frame["prize_eur"] = frame["_prize"]
+    frame = frame.drop(columns="_prize")
+    frame["small"] = sm.is_small(frame).astype(float)
+    state: dict[str, Any] = {}
+
+    def production(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        m = LgbmRaceModel(LGBM_FEATURES, CATEGORICAL, with_market=True)
+        m.fit(base, _with_market(calib))
+        state.clear()
+        state["prod"], state["key"] = m, id(base)
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    def ctx_cal(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        if state.get("key") != id(base):
+            raise RuntimeError("modèle de production du pli absent")
+        prod = state["prod"]
+        m = sm.ContextLgbm(LGBM_FEATURES, CATEGORICAL, with_market=True)
+        m.booster, m.categories = prod.booster, prod.categories
+        m.calibrate(_with_market(calib))
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    def small_only(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        m = sm.ContextLgbm(LGBM_FEATURES, CATEGORICAL, with_market=True)
+        m.fit_weighted(base[base["small"] == 1], _with_market(calib))
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    def weighted(base: pd.DataFrame, calib: pd.DataFrame, test: pd.DataFrame) -> FloatArray:
+        m = sm.ContextLgbm(LGBM_FEATURES, CATEGORICAL, with_market=True)
+        w = np.where(base["small"].to_numpy() == 1, sm.SMALL_WEIGHT, 1.0)
+        m.fit_weighted(base, _with_market(calib), w)
+        sub = _with_market(test)
+        return _masked(test, sub, m.predict(sub))
+
+    runners: dict[str, ModelRunner] = {
+        REFERENCE_MODEL: model_runners()[REFERENCE_MODEL], "lgbm_market": production,
+        "ctx_cal": ctx_cal, "small_only": small_only, "weighted": weighted}
+    wf = run_walk_forward(frame, runners, min_train_days, test_days, calib_days)
+    evald = frame.merge(wf.predictions.drop(columns=["race_date"]), on=["race_id", "num_pmu"])
+    names = list(runners)
+    mkt = _with_market(evald)
+    mkt = mkt[mkt.groupby("race_id")[names].transform(lambda s: s.notna().all()).all(axis=1)]
+    small = mkt[mkt["small"] == 1]
+    big = mkt[mkt["small"] == 0]
+    alpha_pred = 0.05 / len(sm.VARIANTS)
+    alpha_bet = 0.05 / (2 * len(sm.VARIANTS))
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type IN ('SIMPLE_GAGNANT', 'SIMPLE_PLACE')"),
+            conn)
+    f = prepare(small, payouts, "lgbm_market")
+    f = f[f["profit_gagnant"].notna() | f["profit_placé"].notna()]
+    bets = sm.betting(f, ["lgbm_market", *sm.VARIANTS], alpha_bet)
+    success = any(bets[v][b]["all"].get("roi_ci", (0, 0))[0] > 0
+                  for v in sm.VARIANTS for b in ("gagnant", "placé"))
+    dates = sorted(mkt["race_date"].unique())
+    return {
+        "period": [str(dates[0]), str(dates[-1])] if dates else ["", ""],
+        "n_races": int(mkt["race_id"].nunique()), "n_small": int(small["race_id"].nunique()),
+        "n_folds": len(wf.folds), "seconds": round(time.perf_counter() - t0, 1),
+        "errors": {k: v[:3] for k, v in wf.errors.items()},
+        "metrics_small": {n: compute_metrics(small, small[n]).as_dict() for n in names},
+        "small_vs_market": {n: paired_bootstrap(small, small[n], small[REFERENCE_MODEL])
+                            for n in names if n != REFERENCE_MODEL},
+        "big_vs_market": {n: paired_bootstrap(big, big[n], big[REFERENCE_MODEL])
+                          for n in names if n != REFERENCE_MODEL},
+        "variants_vs_prod": {v: _corrected_paired(small, v, "lgbm_market", alpha_pred)
+                             for v in sm.VARIANTS},
+        "variants_vs_prod_big": {v: paired_bootstrap(big, big[v], big["lgbm_market"])
+                                 for v in sm.VARIANTS},
+        "alpha_pred": alpha_pred, "alpha_bet": alpha_bet,
+        "baseline": {b: gs_eval_all(f, b) for b in ("gagnant", "placé")},
+        "betting": bets, "success": success,
+    }
+
+
+def gs_eval_all(f: pd.DataFrame, bet: str) -> dict[str, Any]:
+    """Repère : tous les partants des petites courses, au même pari."""
+    from horse_intelligence.evaluation import grand_search as gs
+
+    col = f"profit_{bet}"
+    sub = f.loc[f[col].notna(), ["race_id", "race_date", col]]
+    return gs.evaluate(sub.groupby(["race_id", "race_date"], as_index=False).agg(
+        stake=(col, "size"), profit=(col, "sum")))
