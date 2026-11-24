@@ -24,6 +24,7 @@
 #   angles : signaux de turfiste en simple gagnant (déferré, œillères, forme, catégorie…)
 #   d4_draw : déferré des 4 pour la 1re fois × numéro de corde, en simple gagnant
 #   contexts : recherche par contexte (hippodrome, réunion, catégorie, distance, allocation, jour)
+#   market_bias : carte du marché par contexte + 4 stratégies regroupées
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -34,7 +35,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles, d4_draw, contexts]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles, d4_draw, contexts, market_bias]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -149,6 +150,9 @@ jobs:
       - name: Recherche par contexte de course
         if: env.EXPERIMENT == 'contexts'
         run: python scripts/experiment_contexts.py
+      - name: Biais du marché par contexte (stratégies regroupées)
+        if: env.EXPERIMENT == 'market_bias'
+        run: python scripts/experiment_market_bias.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py

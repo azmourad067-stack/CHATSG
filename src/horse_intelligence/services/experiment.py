@@ -1157,9 +1157,21 @@ def run_d4_draw(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
 def run_context_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
     """Recherche par contexte de course (evaluation/context_search.py), simple gagnant et
     placé, sur les prédictions hors échantillon."""
+    from horse_intelligence.evaluation import context_search
+
+    f = _context_frame(engine, model_col)
+    if f.empty:
+        return {"n_races": 0, "success": False, "finalists": []}
+    rep = context_search.run(f, model_col)
+    return {"n_races": int(f["race_id"].nunique()),
+            "period": (str(f["race_date"].min()), str(f["race_date"].max())), **rep}
+
+
+def _context_frame(engine: Engine, model_col: str) -> pd.DataFrame:
+    """Partants hors échantillon réglés en gagnant ou en placé, avec le contexte de la
+    course (réunion, libellé, conditions, allocation, conditions de sexe)."""
     from sqlalchemy import text
 
-    from horse_intelligence.evaluation import context_search
     from horse_intelligence.evaluation.profile_search import prepare
     from horse_intelligence.services.training import load_oos_predictions
 
@@ -1169,7 +1181,7 @@ def run_context_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, 
     pred = _with_market(pred)
     pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
     if pred.empty:
-        return {"n_races": 0, "success": False, "finalists": []}
+        return pred
     with engine.connect() as conn:
         payouts = pd.read_sql(text(
             "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
@@ -1180,9 +1192,18 @@ def run_context_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, 
             "FROM races"), conn)
     f = prepare(pred, payouts, model_col)
     f = f[f["profit_gagnant"].notna() | f["profit_placé"].notna()]
-    f = f.drop(columns=[c for c in ("audience", "label", "conditions_text", "prize_eur",
-                                    "sex_condition") if c in f]).merge(
+    return f.drop(columns=[c for c in ("audience", "label", "conditions_text", "prize_eur",
+                                       "sex_condition") if c in f]).merge(
         races, on="race_id", how="left")
-    rep = context_search.run(f, model_col)
+
+
+def run_market_bias(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Carte du marché par contexte et stratégies regroupées (evaluation/market_bias.py)."""
+    from horse_intelligence.evaluation import market_bias
+
+    f = _context_frame(engine, model_col)
+    if f.empty:
+        return {"n_races": 0, "success": False}
+    rep = market_bias.run(f, model_col)
     return {"n_races": int(f["race_id"].nunique()),
             "period": (str(f["race_date"].min()), str(f["race_date"].max())), **rep}
