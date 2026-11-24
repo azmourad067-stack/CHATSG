@@ -1152,3 +1152,37 @@ def run_d4_draw(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
     return {"n_races": int(f["race_id"].nunique()),
             "period": (str(f["race_date"].min()), str(f["race_date"].max())),
             "missing_columns": missing, **rep}
+
+
+def run_context_search(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Recherche par contexte de course (evaluation/context_search.py), simple gagnant et
+    placé, sur les prédictions hors échantillon."""
+    from sqlalchemy import text
+
+    from horse_intelligence.evaluation import context_search
+    from horse_intelligence.evaluation.profile_search import prepare
+    from horse_intelligence.services.training import load_oos_predictions
+
+    pred = load_oos_predictions(engine)
+    if pred is None:
+        raise ValueError("aucune prédiction hors échantillon : lancez l'entraînement")
+    pred = _with_market(pred)
+    pred = pred[pred[model_col].notna() & pred["mkt_odds"].notna()]
+    if pred.empty:
+        return {"n_races": 0, "success": False, "finalists": []}
+    with engine.connect() as conn:
+        payouts = pd.read_sql(text(
+            "SELECT race_id, pool, bet_type, combination, payout_per_eur FROM payouts "
+            "WHERE pool = 'INTERNET' AND bet_type IN ('SIMPLE_GAGNANT', 'SIMPLE_PLACE')"),
+            conn)
+        races = pd.read_sql(text(
+            "SELECT race_id, audience, label, conditions_text, prize_eur, sex_condition "
+            "FROM races"), conn)
+    f = prepare(pred, payouts, model_col)
+    f = f[f["profit_gagnant"].notna() | f["profit_placé"].notna()]
+    f = f.drop(columns=[c for c in ("audience", "label", "conditions_text", "prize_eur",
+                                    "sex_condition") if c in f]).merge(
+        races, on="race_id", how="left")
+    rep = context_search.run(f, model_col)
+    return {"n_races": int(f["race_id"].nunique()),
+            "period": (str(f["race_date"].min()), str(f["race_date"].max())), **rep}
