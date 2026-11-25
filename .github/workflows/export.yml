@@ -1,0 +1,55 @@
+# Export complet de la base (à la demande de l'utilisateur, 25/11/2026) : une copie
+# PostgreSQL (horse_intelligence.dump, à restaurer avec pg_restore) et un fichier CSV par
+# table (sauf stored_files : fichiers binaires des modèles, présents dans la copie).
+# Résultat : archive « export-base » à télécharger en bas de la page de l'exécution,
+# supprimée automatiquement après 1 jour. Lecture seule : rien n'est modifié en base.
+# Dépôt public : toute personne connectée à GitHub peut télécharger l'archive pendant ce
+# jour. La base ne contient ni identifiant, ni mot de passe, ni numéro de téléphone.
+name: export
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+    steps:
+      - name: Vérifier la configuration
+        run: test -n "$DATABASE_URL" || { echo "Secret DATABASE_URL absent."; exit 1; }
+      - name: Copie complète (pg_dump 17, même version que le serveur)
+        continue-on-error: true
+        run: |
+          mkdir -p export/csv
+          url="${DATABASE_URL/+psycopg/}"
+          docker run --rm -e PGURL="$url" -v "$PWD/export:/out" postgres:17 \
+            sh -c 'pg_dump "$PGURL" --schema=public --no-owner --no-privileges \
+                   --enable-row-security -Fc -f /out/horse_intelligence.dump'
+          ls -lh export
+      - name: Un fichier CSV par table
+        run: |
+          mkdir -p export/csv
+          url="${DATABASE_URL/+psycopg/}"
+          docker run --rm -e PGURL="$url" -v "$PWD/export/csv:/out" postgres:17 sh -c '
+            tables=$(psql "$PGURL" -At -c "select table_name from information_schema.tables
+              where table_schema = '\''public'\'' and table_type = '\''BASE TABLE'\''
+              and table_name <> '\''stored_files'\'' order by 1")
+            for t in $tables; do
+              if psql "$PGURL" -q -c "\copy (select * from public.\"$t\") to /out/$t.csv csv header"; then
+                echo "$t : $(($(wc -l < /out/$t.csv) - 1)) lignes"
+              else
+                echo "::warning::table $t non exportée"
+              fi
+            done'
+          du -sh export/csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: export-base
+          path: export
+          retention-days: 1
+          compression-level: 6
