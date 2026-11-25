@@ -1336,3 +1336,15 @@ def gs_eval_all(f: pd.DataFrame, bet: str) -> dict[str, Any]:
     sub = f.loc[f[col].notna(), ["race_id", "race_date", col]]
     return gs.evaluate(sub.groupby(["race_id", "race_date"], as_index=False).agg(
         stake=(col, "size"), profit=(col, "sum")))
+
+
+def run_trot_g_groups(engine: Engine, model_col: str = INCUMBENT) -> dict[str, Any]:
+    """Règle trot G jouée sur 2 ou 3 chevaux en simple gagnant
+    (evaluation/trot_g_groups.py ; grille fixée à l'avance)."""
+    from horse_intelligence.evaluation import trot_g_groups
+
+    f = _context_frame(engine, model_col)
+    if f.empty:
+        return {"n_races": 0, "success": False, "strategies": [], "by_rank": []}
+    rep = trot_g_groups.run(f)
+    return {"period": (str(f["race_date"].min()), str(f["race_date"].max())), **rep}
