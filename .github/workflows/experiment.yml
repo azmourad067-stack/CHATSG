@@ -26,6 +26,7 @@
 #   contexts : recherche par contexte (hippodrome, réunion, catégorie, distance, allocation, jour)
 #   market_bias : carte du marché par contexte + 4 stratégies regroupées
 #   small_meetings : modèle spécialisé pour les petites courses (walk-forward)
+#   trot_g_groups : règle trot G jouée sur 2 ou 3 chevaux en simple gagnant
 #   frozen_national : règle trot G sur réunions nationales vs régionales
 #   bankroll : simulation d'années de paris (règle 3e du modèle, gagnant, trot G)
 name: experiment
@@ -36,7 +37,7 @@ on:
       experiment:
         description: "Expérience"
         type: choice
-        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles, d4_draw, contexts, market_bias, small_meetings]
+        options: [neural, combos, ranks, segments, frozen, bankroll, features, features3, features4, models, place, betting2, tuning, tuning_large, frozen_national, tierce_quinte, quinte_plus, profiles, grand_search, forward_rules, profile_app, value46, angles, d4_draw, contexts, market_bias, small_meetings, trot_g_groups]
         default: neural
       start:
         description: "ranks / frozen : date de début (AAAA-MM-JJ, facultatif)"
@@ -157,6 +158,9 @@ jobs:
       - name: Modèle spécialisé petites courses (walk-forward)
         if: env.EXPERIMENT == 'small_meetings'
         run: python scripts/experiment_small_meetings.py
+      - name: Trot G sur plusieurs chevaux en simple gagnant
+        if: env.EXPERIMENT == 'trot_g_groups'
+        run: python scripts/experiment_trot_g_groups.py
       - name: Règle trot G, réunions nationales vs régionales
         if: env.EXPERIMENT == 'frozen_national'
         run: python scripts/frozen_by_audience.py
